@@ -97,7 +97,13 @@ if st.button("🚀 Run Live Compliance Audit", type="primary"):
     def color_status(val):
         return 'background-color: #ffcccc' if val == 'NON-COMPLIANT' else 'background-color: #ccffcc'
         
-    st.dataframe(results_df.style.applymap(color_status, subset=['Status']), use_container_width=True)
+    # Compatible with both old (.applymap) and new (.map) Pandas versions
+    try:
+        styled_df = results_df.style.map(color_status, subset=['Status'])
+    except AttributeError:
+        styled_df = results_df.style.applymap(color_status, subset=['Status'])
+
+    st.dataframe(styled_df, use_container_width=True)
     
     non_compliant = (results_df["Status"] == "NON-COMPLIANT").sum()
     col1, col2 = st.columns(2)
