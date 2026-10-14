@@ -1,0 +1,21 @@
+EmpID,Name,Nationality,BasicSalary_OMR,RegHours_Wk,DayOT_Hrs,NightOT_Hrs,OT_Paid_OMR,Deduction_OMR
+EMP101,Tariq Al-Balushi,Omani,280.000,40,0,0,0.000,0.000
+EMP102,Rajesh Kumar,Expatriate,350.000,40,10,0,18.230,0.000
+EMP103,Sara Al-Harthy,Omani,450.000,40,0,8,15.000,0.000
+EMP104,Ahmed Al-Ghafri,Omani,325.000,48,0,0,0.000,120.000
+EMP105,Fatma Al-Siyabi,Omani,500.000,40,5,0,13.020,0.000
+EMP106,Mohammed Al-Rawahi,Omani,310.000,40,0,0,0.000,25.000
+EMP107,John Santos,Expatriate,420.000,40,6,4,24.000,0.000
+EMP108,Maryam Al-Zadjali,Omani,620.000,40,0,0,0.000,50.000
+EMP109,Khalid Al-Farsi,Omani,350.000,46,2,0,10.000,0.000
+EMP110,Anish Pillai,Expatriate,290.000,40,8,0,12.080,110.000
+EMP111,Reem Al-Maamari,Omani,400.000,40,0,6,15.000,0.000
+EMP112,Nasser Al-Habsi,Omani,325.000,40,4,0,6.770,0.000
+EMP113,Bilal Khan,Expatriate,380.000,50,0,0,0.000,30.000
+EMP114,Huda Al-Kharusi,Omani,550.000,40,0,0,0.000,180.000
+EMP115,Salem Al-Wahaibi,Omani,300.000,40,0,5,9.380,0.000
+EMP116,Vikram Sharma,Expatriate,480.000,40,12,0,30.000,0.000
+EMP117,Asma Al-Busaidi,Omani,700.000,40,0,0,0.000,70.000
+EMP118,Hamed Al-Hinai,Omani,340.000,44,0,4,14.170,0.000
+EMP119,Michael Chen,Expatriate,520.000,40,4,2,19.500,0.000
+EMP120,Khalfan Al-Shukaili,Omani,325.000,40,0,0,0.000,95.000
