@@ -19,7 +19,7 @@ if df.empty:
     st.stop()
 
 # Helper function to generate 12-month dynamic payroll history per employee
-def generate_annual_payroll_history(emp_record):
+def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_night=0.0, custom_bonus=None):
     months = [
         "January", "February", "March", "April", "May", "June",
         "July", "August", "September", "October", "November", "December"
@@ -27,23 +27,25 @@ def generate_annual_payroll_history(emp_record):
     base_sal = float(emp_record["BaseSalary_OMR"])
     hourly_rate = base_sal / 240.0
     
-    # Use employee ID hash to make realistic, repeatable monthly variations
     np.random.seed(int("".join([str(ord(c)) for c in str(emp_record["EmpID"])])) % 100000)
     
     records = []
-    for m in months:
-        # Varying Overtime and incentives by month
-        day_ot_hrs = float(np.random.choice([0, 5, 8, 12, 16], p=[0.2, 0.3, 0.25, 0.15, 0.1]))
-        night_ot_hrs = float(np.random.choice([0, 4, 8], p=[0.6, 0.3, 0.1]))
-        
-        # Performance bonus variations (e.g. higher in June & December)
-        base_bonus = float(emp_record["Bonus_OMR"])
-        if m in ["June", "December"]:
-            monthly_bonus = base_bonus * 1.5
-        elif m in ["July", "August"]:
-            monthly_bonus = base_bonus * 0.5
+    for idx, m in enumerate(months):
+        # Allow custom override for the latest month (December) if provided by HR
+        if idx == 11 and (custom_ot_day > 0 or custom_ot_night > 0 or custom_bonus is not None):
+            day_ot_hrs = float(custom_ot_day)
+            night_ot_hrs = float(custom_ot_night)
+            monthly_bonus = float(custom_bonus) if custom_bonus is not None else float(emp_record["Bonus_OMR"])
         else:
-            monthly_bonus = base_bonus
+            day_ot_hrs = float(np.random.choice([0, 5, 8, 12, 16], p=[0.2, 0.3, 0.25, 0.15, 0.1]))
+            night_ot_hrs = float(np.random.choice([0, 4, 8], p=[0.6, 0.3, 0.1]))
+            base_bonus = float(emp_record["Bonus_OMR"])
+            if m in ["June", "December"]:
+                monthly_bonus = base_bonus * 1.5
+            elif m in ["July", "August"]:
+                monthly_bonus = base_bonus * 0.5
+            else:
+                monthly_bonus = base_bonus
             
         ot_pay = (day_ot_hrs * hourly_rate * 1.25) + (night_ot_hrs * hourly_rate * 1.50)
         direct_cash = base_sal + ot_pay + monthly_bonus
@@ -75,14 +77,13 @@ if "logged_in" not in st.session_state:
     st.session_state.user_role = None
     st.session_state.emp_id = None
 
-# Function to render employee statement & monthly history
-def render_employee_statement(emp_record):
-    monthly_df = generate_annual_payroll_history(emp_record)
+# Function to render employee statement
+def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0, custom_bonus=None):
+    monthly_df = generate_annual_payroll_history(emp_record, custom_ot_day, custom_ot_night, custom_bonus)
     
     annual_base = monthly_df["Base_Salary"].sum()
     annual_ot = monthly_df["OT_Pay"].sum()
     annual_bonus = monthly_df["Incentive_Bonus"].sum()
-    annual_cash_pay = monthly_df["Net_Cash_Pay"].sum()
     annual_total_rewards = monthly_df["Total_Rewards_Value"].sum()
     
     multiplier = (annual_total_rewards / annual_base) if annual_base > 0 else 0
@@ -99,7 +100,7 @@ def render_employee_statement(emp_record):
 
     # Section 1: Detailed 12-Month Payroll Breakdown Table
     st.markdown("### 📅 12-Month Detailed Payroll & Rewards History")
-    st.caption("Month-by-month variation showing direct earnings, overtime fluctuations, and company-funded benefits.")
+    st.caption("Month-by-month record showing base wage, overtime, bonus variations, and indirect organizational investments.")
     
     st.dataframe(
         monthly_df, 
@@ -152,7 +153,6 @@ def render_employee_statement(emp_record):
         """
         st.info(statement_text)
 
-        # Download Statement Button
         st.download_button(
             label="📥 Download Annual Statement (.txt)",
             data=statement_text,
@@ -212,7 +212,6 @@ if not st.session_state.logged_in:
 # AUTHENTICATED PORTALS
 # ==============================================================================
 else:
-    # Sidebar Session Info
     st.sidebar.write(f"Logged in as: **{st.session_state.user_role}**")
     if st.sidebar.button("Sign Out"):
         st.session_state.logged_in = False
@@ -230,7 +229,6 @@ else:
     elif st.session_state.user_role == "HR":
         st.subheader("🏢 HR Compensation & Benefits Analytics Center")
 
-        # Organization Aggregates
         df_calc = df.copy()
         df_calc["DirectPay"] = df_calc["BaseSalary_OMR"] + df_calc["Bonus_OMR"]
         df_calc["Allowances"] = df_calc["HousingAllow_OMR"] + df_calc["TransportAllow_OMR"]
@@ -247,24 +245,53 @@ else:
 
         st.divider()
 
-        # Individual Employee Audit Feature with Full 12-Month History
-        st.markdown("### 🔍 Individual Employee Audit (12-Month Payroll History)")
+        # Individual Employee Audit & Variable Inputs Section
+        st.markdown("### 🔍 Individual Employee Audit & Variable Pay Adjustment")
+        st.caption("Select an employee, then adjust current variable parameters (Overtime, Bonus) to simulate changes in real-time.")
+        
         emp_options = df_calc.apply(
             lambda r: f"{r.get('EmpID', 'N/A')} - {r.get('Name', 'Unknown')} ({r.get('Department', 'General')})", 
             axis=1
         ).tolist()
         
-        selected_label = st.selectbox("Select Employee to review full yearly statement:", emp_options)
+        selected_label = st.selectbox("Select Employee to audit & adjust:", emp_options)
         selected_id = selected_label.split(" - ")[0]
         selected_emp = df_calc[df_calc["EmpID"] == selected_id].iloc[0]
-        
-        with st.expander("📄 View Employee's Complete 12-Month Payroll Record", expanded=True):
-            render_employee_statement(selected_emp)
+
+        # HR Input Controls for Overtime & Bonuses
+        with st.expander("⚙️ Adjust Variable Pay & Overtime Inputs for this Employee", expanded=True):
+            col_in1, col_in2, col_in3 = st.columns(3)
+            with col_in1:
+                hr_day_ot = st.number_input(
+                    "Day Overtime Hours (1.25x)", 
+                    min_value=0.0, max_value=80.0, value=10.0, step=1.0, 
+                    key=f"hr_day_ot_{selected_id}"
+                )
+            with col_in2:
+                hr_night_ot = st.number_input(
+                    "Night Overtime Hours (1.50x)", 
+                    min_value=0.0, max_value=80.0, value=4.0, step=1.0, 
+                    key=f"hr_night_ot_{selected_id}"
+                )
+            with col_in3:
+                hr_bonus = st.number_input(
+                    "Performance Bonus / Incentive (OMR)", 
+                    min_value=0.0, max_value=3000.0, value=float(selected_emp["Bonus_OMR"]), step=25.0, 
+                    key=f"hr_bonus_{selected_id}"
+                )
+
+        # Render Statement with HR's Variable Inputs
+        render_employee_statement(
+            selected_emp, 
+            custom_ot_day=hr_day_ot, 
+            custom_ot_night=hr_night_ot, 
+            custom_bonus=hr_bonus
+        )
 
         st.divider()
 
         # Organization Workforce Table
-        st.markdown("### 📋 Workforce Baseline Registry")
+        st.markdown("### 📋 Baseline Workforce Summary Registry")
         display_cols = ["EmpID", "Name", "Department", "Grade", "BaseSalary_OMR", "TotalMonthly", "TotalAnnual"]
         st.dataframe(
             df_calc[display_cols], 
@@ -280,6 +307,6 @@ else:
             }
         )
 
-        st.markdown("### 🏢 Monthly Expenditure by Department")
+        st.markdown("### 🏢 Baseline Monthly Expenditure by Department")
         dept_costs = df_calc.groupby("Department")["TotalMonthly"].sum().reset_index()
         st.bar_chart(dept_costs.set_index("Department"))
