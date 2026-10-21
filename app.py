@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 
 st.set_page_config(page_title="Total Rewards Statement Agent", layout="wide")
 
@@ -17,141 +18,145 @@ if df.empty:
     st.error("⚠️ 'dataset.csv' was not found. Please ensure it is uploaded in the repository.")
     st.stop()
 
+# Helper function to generate 12-month dynamic payroll history per employee
+def generate_annual_payroll_history(emp_record):
+    months = [
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    ]
+    base_sal = float(emp_record["BaseSalary_OMR"])
+    hourly_rate = base_sal / 240.0
+    
+    # Use employee ID hash to make realistic, repeatable monthly variations
+    np.random.seed(int("".join([str(ord(c)) for c in str(emp_record["EmpID"])])) % 100000)
+    
+    records = []
+    for m in months:
+        # Varying Overtime and incentives by month
+        day_ot_hrs = float(np.random.choice([0, 5, 8, 12, 16], p=[0.2, 0.3, 0.25, 0.15, 0.1]))
+        night_ot_hrs = float(np.random.choice([0, 4, 8], p=[0.6, 0.3, 0.1]))
+        
+        # Performance bonus variations (e.g. higher in June & December)
+        base_bonus = float(emp_record["Bonus_OMR"])
+        if m in ["June", "December"]:
+            monthly_bonus = base_bonus * 1.5
+        elif m in ["July", "August"]:
+            monthly_bonus = base_bonus * 0.5
+        else:
+            monthly_bonus = base_bonus
+            
+        ot_pay = (day_ot_hrs * hourly_rate * 1.25) + (night_ot_hrs * hourly_rate * 1.50)
+        direct_cash = base_sal + ot_pay + monthly_bonus
+        
+        allowances = float(emp_record["HousingAllow_OMR"]) + float(emp_record["TransportAllow_OMR"])
+        protections = float(emp_record["HealthCover_OMR"]) + float(emp_record["PensionContrib_OMR"])
+        perks = float(emp_record["FlightTickets_OMR"]) + float(emp_record["WellnessPerks_OMR"])
+        
+        total_month_rewards = direct_cash + allowances + protections + perks
+        
+        records.append({
+            "Month": m,
+            "Base_Salary": base_sal,
+            "Day_OT_Hrs": day_ot_hrs,
+            "Night_OT_Hrs": night_ot_hrs,
+            "OT_Pay": ot_pay,
+            "Incentive_Bonus": monthly_bonus,
+            "Cash_Allowances": allowances,
+            "Social_Protections": protections,
+            "Perks_Subsidies": perks,
+            "Net_Cash_Pay": direct_cash + allowances,
+            "Total_Rewards_Value": total_month_rewards
+        })
+    return pd.DataFrame(records)
+
 # 2. Session State Initialization
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_role = None
     st.session_state.emp_id = None
 
-# Function to render employee statement with dynamic monthly adjustments
-def render_employee_statement(emp_record, is_hr_view=False):
-    base_sal = float(emp_record["BaseSalary_OMR"])
-    hourly_rate = base_sal / 240.0  # Standard monthly working hours divisor
+# Function to render employee statement & monthly history
+def render_employee_statement(emp_record):
+    monthly_df = generate_annual_payroll_history(emp_record)
+    
+    annual_base = monthly_df["Base_Salary"].sum()
+    annual_ot = monthly_df["OT_Pay"].sum()
+    annual_bonus = monthly_df["Incentive_Bonus"].sum()
+    annual_cash_pay = monthly_df["Net_Cash_Pay"].sum()
+    annual_total_rewards = monthly_df["Total_Rewards_Value"].sum()
+    
+    multiplier = (annual_total_rewards / annual_base) if annual_base > 0 else 0
+    base_share = (annual_base / annual_total_rewards) * 100 if annual_total_rewards > 0 else 0
 
-    # --- Section: Monthly Variable Pay Adjustment (Overtime) ---
-    st.markdown("### ⏱️ Monthly Variable Pay & Overtime Adjustment")
-    st.caption("Adjust current month variable inputs to see how overtime changes this month's take-home pay versus standard pay.")
-
-    col_ot1, col_ot2, col_ot3 = st.columns(3)
-    with col_ot1:
-        day_ot_hours = st.number_input(
-            "Day Overtime Hours (1.25x)", 
-            min_value=0.0, max_value=60.0, value=0.0, step=1.0, 
-            key=f"day_ot_{emp_record['EmpID']}_{is_hr_view}"
-        )
-    with col_ot2:
-        night_ot_hours = st.number_input(
-            "Night / Rest-Day Overtime Hours (1.5x)", 
-            min_value=0.0, max_value=60.0, value=0.0, step=1.0, 
-            key=f"night_ot_{emp_record['EmpID']}_{is_hr_view}"
-        )
-    with col_ot3:
-        current_month_bonus = st.number_input(
-            "Current Month Incentive/Bonus (OMR)", 
-            min_value=0.0, max_value=2000.0, value=float(emp_record["Bonus_OMR"]), step=10.0, 
-            key=f"bonus_{emp_record['EmpID']}_{is_hr_view}"
-        )
-
-    # Overtime and Variable Calculations
-    day_ot_pay = day_ot_hours * hourly_rate * 1.25
-    night_ot_pay = night_ot_hours * hourly_rate * 1.50
-    total_ot_pay = day_ot_pay + night_ot_pay
-
-    # Direct Pay Components
-    direct_cash_this_month = base_sal + current_month_bonus + total_ot_pay
-    standard_monthly_cash = base_sal + float(emp_record["Bonus_OMR"])
-
-    # Allowances and Benefits
-    allowances = float(emp_record["HousingAllow_OMR"]) + float(emp_record["TransportAllow_OMR"])
-    protections = float(emp_record["HealthCover_OMR"]) + float(emp_record["PensionContrib_OMR"])
-    perks = float(emp_record["FlightTickets_OMR"]) + float(emp_record["WellnessPerks_OMR"])
-
-    total_rewards_this_month = direct_cash_this_month + allowances + protections + perks
-    standard_total_rewards = standard_monthly_cash + allowances + protections + perks
-    annual_projected = total_rewards_this_month * 12.0
-    multiplier = (total_rewards_this_month / base_sal) if base_sal > 0 else 0
-    base_share = (base_sal / total_rewards_this_month) * 100 if total_rewards_this_month > 0 else 0
+    # Macro Metric Cards
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Annual Base Salary", f"OMR {annual_base:,.2f}")
+    c2.metric("Annual Overtime Earned", f"OMR {annual_ot:,.2f}", delta=f"{monthly_df['Day_OT_Hrs'].sum() + monthly_df['Night_OT_Hrs'].sum():.0f} total hrs")
+    c3.metric("Annual Total Rewards Value", f"OMR {annual_total_rewards:,.2f}")
+    c4.metric("Annual Multiplier", f"{multiplier:.2f}x Base")
 
     st.divider()
 
-    # KPI Metric Cards
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Base Monthly Salary", f"OMR {base_sal:.3f}")
-    c2.metric(
-        "Current Month Cash Pay", 
-        f"OMR {direct_cash_this_month:.3f}", 
-        delta=f"+OMR {total_ot_pay:.3f} OT" if total_ot_pay > 0 else "Standard"
+    # Section 1: Detailed 12-Month Payroll Breakdown Table
+    st.markdown("### 📅 12-Month Detailed Payroll & Rewards History")
+    st.caption("Month-by-month variation showing direct earnings, overtime fluctuations, and company-funded benefits.")
+    
+    st.dataframe(
+        monthly_df, 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "Month": st.column_config.TextColumn("Month", width="small"),
+            "Base_Salary": st.column_config.NumberColumn("Base Pay", format="OMR %.2f"),
+            "Day_OT_Hrs": st.column_config.NumberColumn("Day OT (h)", format="%.1f"),
+            "Night_OT_Hrs": st.column_config.NumberColumn("Night OT (h)", format="%.1f"),
+            "OT_Pay": st.column_config.NumberColumn("OT Amount", format="OMR %.2f"),
+            "Incentive_Bonus": st.column_config.NumberColumn("Bonus/Incentive", format="OMR %.2f"),
+            "Cash_Allowances": st.column_config.NumberColumn("Allowances", format="OMR %.2f"),
+            "Social_Protections": st.column_config.NumberColumn("Health & Pension", format="OMR %.2f"),
+            "Perks_Subsidies": st.column_config.NumberColumn("Perks/Travel", format="OMR %.2f"),
+            "Net_Cash_Pay": st.column_config.NumberColumn("Cash Payout", format="OMR %.2f"),
+            "Total_Rewards_Value": st.column_config.NumberColumn("Total Rewards", format="OMR %.2f"),
+        }
     )
-    c3.metric("Total Rewards Value (This Month)", f"OMR {total_rewards_this_month:.3f}")
-    c4.metric("Package Multiplier", f"{multiplier:.2f}x Base Pay")
 
     st.write("")
-    col_left, col_right = st.columns([1.1, 0.9])
 
-    with col_left:
-        st.markdown("#### 📊 Current Month Rewards Breakdown")
-        breakdown_data = pd.DataFrame({
-            "Component Category": [
-                "1. Base Salary",
-                "2. Overtime Pay (This Month)",
-                "3. Performance Incentive / Bonus",
-                "4. Cash Allowances (Housing + Transport)",
-                "5. Social Protection & Healthcare",
-                "6. Indirect Perks (Tickets + Wellness)"
-            ],
-            "Amount (OMR)": [base_sal, total_ot_pay, current_month_bonus, allowances, protections, perks],
-            "Share of Total (%)": [
-                f"{(base_sal / total_rewards_this_month) * 100:.1f}%",
-                f"{(total_ot_pay / total_rewards_this_month) * 100:.1f}%",
-                f"{(current_month_bonus / total_rewards_this_month) * 100:.1f}%",
-                f"{(allowances / total_rewards_this_month) * 100:.1f}%",
-                f"{(protections / total_rewards_this_month) * 100:.1f}%",
-                f"{(perks / total_rewards_this_month) * 100:.1f}%"
-            ]
-        })
-        st.dataframe(
-            breakdown_data, 
-            use_container_width=True, 
-            hide_index=True,
-            column_config={
-                "Component Category": st.column_config.TextColumn("Reward Category", width="large"),
-                "Amount (OMR)": st.column_config.NumberColumn("Amount (OMR)", format="OMR %.3f"),
-                "Share of Total (%)": st.column_config.TextColumn("Share (%)", width="medium"),
-            }
-        )
-        st.bar_chart(breakdown_data.set_index("Component Category")["Amount (OMR)"])
+    # Section 2: Visual Trends Over the 12 Months
+    col_chart, col_summary = st.columns([1.1, 0.9])
+    
+    with col_chart:
+        st.markdown("#### 📈 Monthly Compensation Trends (Fluctuations)")
+        trend_chart_data = monthly_df.set_index("Month")[["Net_Cash_Pay", "Total_Rewards_Value"]]
+        st.line_chart(trend_chart_data)
 
-    with col_right:
-        st.markdown("#### 📜 Formal Total Rewards Statement")
+    with col_summary:
+        st.markdown("#### 📜 Annual Total Rewards Summary Statement")
         statement_text = f"""
         **Employee Name:** {emp_record['Name']} ({emp_record['EmpID']})  
         **Grade & Department:** Grade {emp_record['Grade']} | {emp_record['Department']} Department  
 
         ---
-        ### Detailed Monthly Compensation Breakdown
-        * **Fixed Base Salary:** OMR {base_sal:.3f}
-        * **Earned Overtime Pay (Current Month):** OMR {total_ot_pay:.3f} ({day_ot_hours} Day hrs, {night_ot_hours} Night hrs)
-        * **Monthly Performance Bonus:** OMR {current_month_bonus:.3f}
-        * **Company Housing Allowance:** OMR {float(emp_record['HousingAllow_OMR']):.3f}
-        * **Transportation Allowance:** OMR {float(emp_record['TransportAllow_OMR']):.3f}
-        * **Sponsored Health Coverage:** OMR {float(emp_record['HealthCover_OMR']):.3f}
-        * **Social Protection / Pension Contribution:** OMR {float(emp_record['PensionContrib_OMR']):.3f}
-        * **Annual Flight Subsidies (Monthly Equiv.):** OMR {float(emp_record['FlightTickets_OMR']):.3f}
-        * **Wellness & Other Organizational Perks:** OMR {float(emp_record['WellnessPerks_OMR']):.3f}
+        ### 12-Month Cumulative Totals
+        * **Total Base Wage Paid:** OMR {annual_base:,.2f}
+        * **Total Overtime Payouts:** OMR {annual_ot:,.2f}
+        * **Total Performance Bonuses:** OMR {annual_bonus:,.2f}
+        * **Total Housing & Transport Allowances:** OMR {monthly_df['Cash_Allowances'].sum():,.2f}
+        * **Total Healthcare & Pension Coverage:** OMR {monthly_df['Social_Protections'].sum():,.2f}
+        * **Total Perks & Flight Subsidies:** OMR {monthly_df['Perks_Subsidies'].sum():,.2f}
         ---
-        **Total Realized Rewards (This Month):** **OMR {total_rewards_this_month:.3f}**  
-        **Standard Month (Without Extra OT):** **OMR {standard_total_rewards:.3f}**  
+        **Grand Total Annual Rewards Investment:** **OMR {annual_total_rewards:,.2f}**  
         
-        💡 **Executive Statement:**  
-        Your base salary represents only **{base_share:.1f}%** of the total investment made by the company in your welfare and compensation this month.
+        💡 **Executive Message:**  
+        Your direct basic salary accounts for only **{base_share:.1f}%** of the total investment made by the organization throughout the entire year.
         """
         st.info(statement_text)
 
         # Download Statement Button
         st.download_button(
-            label="📥 Download Official Statement Summary (.txt)",
+            label="📥 Download Annual Statement (.txt)",
             data=statement_text,
-            file_name=f"Total_Rewards_Statement_{emp_record['EmpID']}.txt",
+            file_name=f"Annual_Total_Rewards_{emp_record['EmpID']}.txt",
             mime="text/plain"
         )
 
@@ -219,7 +224,7 @@ else:
     if st.session_state.user_role == "Employee":
         emp_record = df[df["EmpID"].astype(str).str.upper() == st.session_state.emp_id].iloc[0]
         st.subheader(f"👤 Welcome, {emp_record['Name']} ({emp_record['EmpID']})")
-        render_employee_statement(emp_record, is_hr_view=False)
+        render_employee_statement(emp_record)
 
     # 2. HR Authenticated View
     elif st.session_state.user_role == "HR":
@@ -236,31 +241,30 @@ else:
 
         h1, h2, h3, h4 = st.columns(4)
         h1.metric("Total Headcount", len(df_calc))
-        h1_payroll = df_calc['BaseSalary_OMR'].sum()
-        h2.metric("Monthly Base Payroll", f"OMR {h1_payroll:,.2f}")
+        h2.metric("Monthly Base Payroll", f"OMR {df_calc['BaseSalary_OMR'].sum():,.2f}")
         h3.metric("Total Monthly Rewards", f"OMR {df_calc['TotalMonthly'].sum():,.2f}")
         h4.metric("Annual Rewards Budget", f"OMR {df_calc['TotalAnnual'].sum():,.2f}")
 
         st.divider()
 
-        # Individual Employee Audit Feature
-        st.markdown("### 🔍 Individual Employee Audit & Monthly Adjustment")
+        # Individual Employee Audit Feature with Full 12-Month History
+        st.markdown("### 🔍 Individual Employee Audit (12-Month Payroll History)")
         emp_options = df_calc.apply(
             lambda r: f"{r.get('EmpID', 'N/A')} - {r.get('Name', 'Unknown')} ({r.get('Department', 'General')})", 
             axis=1
         ).tolist()
         
-        selected_label = st.selectbox("Select Employee to audit rewards statement:", emp_options)
+        selected_label = st.selectbox("Select Employee to review full yearly statement:", emp_options)
         selected_id = selected_label.split(" - ")[0]
         selected_emp = df_calc[df_calc["EmpID"] == selected_id].iloc[0]
         
-        with st.expander("📄 View & Adjust Employee's Detailed Rewards Statement", expanded=True):
-            render_employee_statement(selected_emp, is_hr_view=True)
+        with st.expander("📄 View Employee's Complete 12-Month Payroll Record", expanded=True):
+            render_employee_statement(selected_emp)
 
         st.divider()
 
         # Organization Workforce Table
-        st.markdown("### 📋 Baseline Workforce Summary Registry")
+        st.markdown("### 📋 Workforce Baseline Registry")
         display_cols = ["EmpID", "Name", "Department", "Grade", "BaseSalary_OMR", "TotalMonthly", "TotalAnnual"]
         st.dataframe(
             df_calc[display_cols], 
@@ -276,6 +280,6 @@ else:
             }
         )
 
-        st.markdown("### 🏢 Baseline Monthly Expenditure by Department")
+        st.markdown("### 🏢 Monthly Expenditure by Department")
         dept_costs = df_calc.groupby("Department")["TotalMonthly"].sum().reset_index()
         st.bar_chart(dept_costs.set_index("Department"))
