@@ -31,7 +31,7 @@ def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_nig
     
     records = []
     for idx, m in enumerate(months):
-        # Allow custom override for the latest month (December) if provided by HR
+        # Allow custom override for current month (December)
         if idx == 11 and (custom_ot_day > 0 or custom_ot_night > 0 or custom_bonus is not None):
             day_ot_hrs = float(custom_ot_day)
             night_ot_hrs = float(custom_ot_night)
@@ -98,12 +98,20 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
 
     st.divider()
 
-    # Section 1: Detailed 12-Month Payroll Breakdown Table
+    # Section 1: Detailed 12-Month Payroll Breakdown Table with Grey Highlight on December
     st.markdown("### 📅 12-Month Detailed Payroll & Rewards History")
-    st.caption("Month-by-month record showing base wage, overtime, bonus variations, and indirect organizational investments.")
-    
+    st.caption("📌 Note: The current month (**December**) and all its active components are highlighted in grey for immediate identification.")
+
+    # Function to highlight December row in grey with bold text
+    def highlight_current_month(row):
+        if row["Month"] == "December":
+            return ["background-color: #6c757d; color: #ffffff; font-weight: bold; border-top: 2px solid #343a40; border-bottom: 2px solid #343a40;"] * len(row)
+        return [""] * len(row)
+
+    styled_monthly_df = monthly_df.style.apply(highlight_current_month, axis=1)
+
     st.dataframe(
-        monthly_df, 
+        styled_monthly_df, 
         use_container_width=True, 
         hide_index=True,
         column_config={
@@ -162,7 +170,7 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
 
 # Header
 st.title("💼 Total Rewards Statement Agent")
-st.caption("MNGT3557 Compensation & Performance Management | Section 1 Agent (Topic 8)")
+st.caption("MNGT3557 Compensation & Performance Management | Section 1 Agent (Topic 8)")[cite: 3]
 st.divider()
 
 # ==============================================================================
