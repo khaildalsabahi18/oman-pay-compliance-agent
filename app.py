@@ -14,7 +14,10 @@ except Exception:
     st.stop()
 
 # Employee Selector Dropdown
-emp_options = df.apply(lambda r: f"{r['EmpID']} - {r['Name']} ({r['Department']})", axis=1).tolist()
+emp_options = df.apply(
+    lambda r: f"{r.get('EmpID', 'N/A')} - {r.get('Name', 'Unknown')} ({r.get('Department', 'General')})", 
+    axis=1
+).tolist()
 selected_label = st.selectbox("Select Employee for Total Rewards Review:", emp_options)
 selected_id = selected_label.split(" - ")[0]
 emp = df[df["EmpID"] == selected_id].iloc[0]
