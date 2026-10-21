@@ -170,7 +170,7 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
 
 # Header
 st.title("💼 Total Rewards Statement Agent")
-st.caption("MNGT3557 Compensation & Performance Management | Section 1 Agent (Topic 8)")[cite: 3]
+st.caption("MNGT3557 Compensation & Performance Management | Section 1 Agent (Topic 8)")
 st.divider()
 
 # ==============================================================================
