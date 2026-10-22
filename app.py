@@ -18,14 +18,26 @@ if df.empty:
     st.error("⚠️ 'dataset.csv' was not found. Please ensure it is uploaded in the repository.")
     st.stop()
 
+# Ensure Nationality column exists for pension rules (defaults to Omani if missing)
+if "Nationality" not in df.columns:
+    # Infer or default if not explicit in CSV
+    df["Nationality"] = df["PensionContrib_OMR"].apply(lambda x: "Omani" if float(x) > 0 else "Expatriate")
+
 # Helper function to generate 12-month dynamic payroll history per employee
-def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_night=0.0, custom_bonus=None):
+def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_night=0.0, custom_bonus=None, spf_rate=0.11):
     months = [
         "January", "February", "March", "April", "May", "June",
         "July", "August", "September", "October", "November", "December"
     ]
     base_sal = float(emp_record["BaseSalary_OMR"])
+    allowances = float(emp_record["HousingAllow_OMR"]) + float(emp_record["TransportAllow_OMR"])
     hourly_rate = base_sal / 240.0
+    is_national = str(emp_record.get("Nationality", "Omani")).strip().lower() == "omani"
+    
+    # Statutory SPF employer contribution (11% of base pay for nationals; 0 for expats)
+    monthly_pension = (base_sal * spf_rate) if is_national else 0.0
+    health_cover = float(emp_record["HealthCover_OMR"])
+    perks = float(emp_record["FlightTickets_OMR"]) + float(emp_record["WellnessPerks_OMR"])
     
     np.random.seed(int("".join([str(ord(c)) for c in str(emp_record["EmpID"])])) % 100000)
     
@@ -48,12 +60,8 @@ def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_nig
             
         ot_pay = (day_ot_hrs * hourly_rate * 1.25) + (night_ot_hrs * hourly_rate * 1.50)
         direct_cash = base_sal + ot_pay + monthly_bonus
-        
-        allowances = float(emp_record["HousingAllow_OMR"]) + float(emp_record["TransportAllow_OMR"])
-        protections = float(emp_record["HealthCover_OMR"]) + float(emp_record["PensionContrib_OMR"])
-        perks = float(emp_record["FlightTickets_OMR"]) + float(emp_record["WellnessPerks_OMR"])
-        
-        total_month_rewards = direct_cash + allowances + protections + perks
+        social_protections = health_cover + monthly_pension
+        total_month_rewards = direct_cash + allowances + social_protections + perks
         
         records.append({
             "Month": m,
@@ -63,7 +71,8 @@ def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_nig
             "OT_Pay": ot_pay,
             "Incentive_Bonus": monthly_bonus,
             "Cash_Allowances": allowances,
-            "Social_Protections": protections,
+            "SPF_Pension": monthly_pension,
+            "Health_Insurance": health_cover,
             "Perks_Subsidies": perks,
             "Net_Cash_Pay": direct_cash + allowances,
             "Total_Rewards_Value": total_month_rewards
@@ -75,14 +84,17 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_role = None
     st.session_state.emp_id = None
+if "spf_rate" not in st.session_state:
+    st.session_state.spf_rate = 0.11
 
 # Function to render employee statement
-def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0, custom_bonus=None):
-    monthly_df = generate_annual_payroll_history(emp_record, custom_ot_day, custom_ot_night, custom_bonus)
+def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0, custom_bonus=None, spf_rate=0.11):
+    monthly_df = generate_annual_payroll_history(emp_record, custom_ot_day, custom_ot_night, custom_bonus, spf_rate)
     
     annual_base = monthly_df["Base_Salary"].sum()
     annual_ot = monthly_df["OT_Pay"].sum()
     annual_bonus = monthly_df["Incentive_Bonus"].sum()
+    annual_pension = monthly_df["SPF_Pension"].sum()
     annual_total_rewards = monthly_df["Total_Rewards_Value"].sum()
     
     multiplier = (annual_total_rewards / annual_base) if annual_base > 0 else 0
@@ -92,12 +104,12 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Annual Base Salary", f"OMR {annual_base:,.2f}")
     c2.metric("Annual Overtime Earned", f"OMR {annual_ot:,.2f}", delta=f"{monthly_df['Day_OT_Hrs'].sum() + monthly_df['Night_OT_Hrs'].sum():.0f} total hrs")
-    c3.metric("Annual Total Rewards Value", f"OMR {annual_total_rewards:,.2f}")
-    c4.metric("Annual Multiplier", f"{multiplier:.2f}x Base")
+    c3.metric("Employer SPF Pension Investment", f"OMR {annual_pension:,.2f}", delta=f"{spf_rate*100:.1f}% Statutory" if annual_pension > 0 else "Expatriate (EOSG)")
+    c4.metric("Annual Rewards Multiplier", f"{multiplier:.2f}x Base")
 
     st.divider()
 
-    # Section 1: Detailed 12-Month Payroll Breakdown Table with Grey Highlight on December
+    # Section 1: Detailed 12-Month Payroll Breakdown Table
     st.markdown("### 📅 12-Month Detailed Payroll & Rewards History")
     st.caption("📌 Note: The current month (**December**) and all its active components are highlighted in grey for immediate identification.")
 
@@ -120,7 +132,8 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
             "OT_Pay": st.column_config.NumberColumn("OT Amount", format="OMR %.2f"),
             "Incentive_Bonus": st.column_config.NumberColumn("Bonus/Incentive", format="OMR %.2f"),
             "Cash_Allowances": st.column_config.NumberColumn("Allowances", format="OMR %.2f"),
-            "Social_Protections": st.column_config.NumberColumn("Health & Pension", format="OMR %.2f"),
+            "SPF_Pension": st.column_config.NumberColumn("SPF Pension (OMR)", format="OMR %.2f"),
+            "Health_Insurance": st.column_config.NumberColumn("Health Ins.", format="OMR %.2f"),
             "Perks_Subsidies": st.column_config.NumberColumn("Perks/Travel", format="OMR %.2f"),
             "Net_Cash_Pay": st.column_config.NumberColumn("Cash Payout", format="OMR %.2f"),
             "Total_Rewards_Value": st.column_config.NumberColumn("Total Rewards", format="OMR %.2f"),
@@ -139,9 +152,12 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
 
     with col_summary:
         st.markdown("#### 📜 Annual Total Rewards Summary Statement")
+        nationality_status = "Omani National (Active SPF Participant)" if annual_pension > 0 else "Expatriate Employee (Subject to Statutory End-of-Service)"
+        
         statement_text = f"""
         **Employee Name:** {emp_record['Name']} ({emp_record['EmpID']})  
         **Grade & Department:** Grade {emp_record['Grade']} | {emp_record['Department']} Department  
+        **Social Protection Status:** {nationality_status}
 
         ---
         ### 12-Month Cumulative Totals
@@ -149,7 +165,8 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
         * **Total Overtime Payouts:** OMR {annual_ot:,.2f}
         * **Total Performance Bonuses:** OMR {annual_bonus:,.2f}
         * **Total Housing & Transport Allowances:** OMR {monthly_df['Cash_Allowances'].sum():,.2f}
-        * **Total Healthcare & Pension Coverage:** OMR {monthly_df['Social_Protections'].sum():,.2f}
+        * **Employer Pension Contributions (SPF):** OMR {annual_pension:,.2f} ({spf_rate*100:.1f}% Employer Share)
+        * **Employer Healthcare Coverage:** OMR {monthly_df['Health_Insurance'].sum():,.2f}
         * **Total Perks & Flight Subsidies:** OMR {monthly_df['Perks_Subsidies'].sum():,.2f}
         ---
         **Grand Total Annual Rewards Investment:** **OMR {annual_total_rewards:,.2f}**  
@@ -193,8 +210,6 @@ if not st.session_state.logged_in:
 
             if submitted:
                 cleaned_id = user_id.strip()
-                
-                # Employee Authentication
                 if "Employee" in portal_choice:
                     valid_ids = df["EmpID"].astype(str).str.upper().tolist()
                     if cleaned_id.upper() in valid_ids and password == "1234":
@@ -205,7 +220,6 @@ if not st.session_state.logged_in:
                     else:
                         st.error("❌ Invalid Employee ID or Password! (Hint: Password is 1234)")
                 
-                # HR Authentication
                 elif "HR" in portal_choice:
                     if cleaned_id.lower() == "hr" and password == "1234":
                         st.session_state.logged_in = True
@@ -214,18 +228,15 @@ if not st.session_state.logged_in:
                     else:
                         st.error("❌ Invalid HR credentials! (Use ID: hr and Password: 1234)")
 
-    # --- Quick Developer / Demo Fast Bypass Section ---
     st.write("")
     with st.expander("⚡ Developer / Demo Fast Bypass (تخطي الدخول السريع للمطور)"):
         st.caption("Use these quick bypass buttons during live presentations to skip typing credentials:")
         dev_col1, dev_col2 = st.columns(2)
-        
         with dev_col1:
             if st.button("🚀 Quick Login as HR Specialist (تخطي كـ HR)"):
                 st.session_state.logged_in = True
                 st.session_state.user_role = "HR"
                 st.rerun()
-                
         with dev_col2:
             first_emp_id = str(df.iloc[0]["EmpID"]).upper()
             if st.button(f"👤 Quick Login as Employee ({first_emp_id})"):
@@ -249,19 +260,36 @@ else:
     if st.session_state.user_role == "Employee":
         emp_record = df[df["EmpID"].astype(str).str.upper() == st.session_state.emp_id].iloc[0]
         st.subheader(f"👤 Welcome, {emp_record['Name']} ({emp_record['EmpID']})")
-        render_employee_statement(emp_record)
+        render_employee_statement(emp_record, spf_rate=st.session_state.spf_rate)
 
     # 2. HR Authenticated View
     elif st.session_state.user_role == "HR":
         st.subheader("🏢 HR Compensation & Benefits Analytics Center")
 
+        # Configurable Statutory SPF Pension Rate in Sidebar
+        st.sidebar.divider()
+        st.sidebar.subheader("⚙️ Oman Pension / SPF Policy")
+        st.session_state.spf_rate = st.sidebar.slider(
+            "Employer SPF Pension Share (%)",
+            min_value=5.0, max_value=20.0, value=11.0, step=0.5
+        ) / 100.0
+        st.sidebar.caption("Statutory benchmark under Omani Social Protection Law is 11.0%.")
+
         df_calc = df.copy()
-        df_calc["DirectPay"] = df_calc["BaseSalary_OMR"] + df_calc["Bonus_OMR"]
-        df_calc["Allowances"] = df_calc["HousingAllow_OMR"] + df_calc["TransportAllow_OMR"]
-        df_calc["Protections"] = df_calc["HealthCover_OMR"] + df_calc["PensionContrib_OMR"]
-        df_calc["Perks"] = df_calc["FlightTickets_OMR"] + df_calc["WellnessPerks_OMR"]
-        df_calc["TotalMonthly"] = df_calc["DirectPay"] + df_calc["Allowances"] + df_calc["Protections"] + df_calc["Perks"]
-        df_calc["TotalAnnual"] = df_calc["TotalMonthly"] * 12.0
+        
+        # Calculate totals dynamically using the active SPF rate
+        def calc_emp_annual_total(r):
+            base = float(r["BaseSalary_OMR"])
+            is_nat = str(r.get("Nationality", "Omani")).strip().lower() == "omani"
+            pension_m = (base * st.session_state.spf_rate) if is_nat else 0.0
+            direct_m = base + float(r["Bonus_OMR"])
+            allow_m = float(r["HousingAllow_OMR"]) + float(r["TransportAllow_OMR"])
+            prot_m = float(r["HealthCover_OMR"]) + pension_m
+            perks_m = float(r["FlightTickets_OMR"]) + float(r["WellnessPerks_OMR"])
+            return (direct_m + allow_m + prot_m + perks_m) * 12.0
+
+        df_calc["TotalAnnual"] = df_calc.apply(calc_emp_annual_total, axis=1)
+        df_calc["TotalMonthly"] = df_calc["TotalAnnual"] / 12.0
 
         h1, h2, h3, h4 = st.columns(4)
         h1.metric("Total Headcount", len(df_calc))
@@ -273,7 +301,7 @@ else:
 
         # Individual Employee Audit & Variable Inputs Section
         st.markdown("### 🔍 Individual Employee Audit & Variable Pay Adjustment")
-        st.caption("Select an employee, then adjust current variable parameters (Overtime, Bonus) to simulate changes in real-time.")
+        st.caption("Select an employee, then adjust variable parameters (Overtime, Bonus) to simulate changes in real-time.")
         
         emp_options = df_calc.apply(
             lambda r: f"{r.get('EmpID', 'N/A')} - {r.get('Name', 'Unknown')} ({r.get('Department', 'General')})", 
@@ -284,7 +312,6 @@ else:
         selected_id = selected_label.split(" - ")[0]
         selected_emp = df_calc[df_calc["EmpID"] == selected_id].iloc[0]
 
-        # HR Input Controls for Overtime & Bonuses
         with st.expander("⚙️ Adjust Variable Pay & Overtime Inputs for this Employee", expanded=True):
             col_in1, col_in2, col_in3 = st.columns(3)
             with col_in1:
@@ -306,12 +333,13 @@ else:
                     key=f"hr_bonus_{selected_id}"
                 )
 
-        # Render Statement with HR's Variable Inputs
+        # Render Statement with HR's Variable Inputs & Dynamic Pension
         render_employee_statement(
             selected_emp, 
             custom_ot_day=hr_day_ot, 
             custom_ot_night=hr_night_ot, 
-            custom_bonus=hr_bonus
+            custom_bonus=hr_bonus,
+            spf_rate=st.session_state.spf_rate
         )
 
         st.divider()
