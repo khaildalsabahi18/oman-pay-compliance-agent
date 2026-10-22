@@ -18,10 +18,16 @@ if df.empty:
     st.error("⚠️ 'dataset.csv' was not found. Please ensure it is uploaded in the repository.")
     st.stop()
 
-# Ensure Nationality column exists for pension rules (defaults to Omani if missing)
+# Ensure required columns exist
 if "Nationality" not in df.columns:
-    # Infer or default if not explicit in CSV
     df["Nationality"] = df["PensionContrib_OMR"].apply(lambda x: "Omani" if float(x) > 0 else "Expatriate")
+
+if "Age" not in df.columns:
+    np.random.seed(42)
+    df["Age"] = np.random.randint(26, 52, size=len(df))
+
+if "YearsOfService" not in df.columns:
+    df["YearsOfService"] = df["Age"].apply(lambda a: max(1, a - 24))
 
 # Helper function to generate 12-month dynamic payroll history per employee
 def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_night=0.0, custom_bonus=None, spf_rate=0.11):
@@ -34,8 +40,7 @@ def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_nig
     hourly_rate = base_sal / 240.0
     is_national = str(emp_record.get("Nationality", "Omani")).strip().lower() == "omani"
     
-    # Statutory SPF employer contribution (11% of base pay for nationals; 0 for expats)
-    monthly_pension = (base_sal * spf_rate) if is_national else 0.0
+    monthly_pension_employer = (base_sal * spf_rate) if is_national else 0.0
     health_cover = float(emp_record["HealthCover_OMR"])
     perks = float(emp_record["FlightTickets_OMR"]) + float(emp_record["WellnessPerks_OMR"])
     
@@ -60,7 +65,7 @@ def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_nig
             
         ot_pay = (day_ot_hrs * hourly_rate * 1.25) + (night_ot_hrs * hourly_rate * 1.50)
         direct_cash = base_sal + ot_pay + monthly_bonus
-        social_protections = health_cover + monthly_pension
+        social_protections = health_cover + monthly_pension_employer
         total_month_rewards = direct_cash + allowances + social_protections + perks
         
         records.append({
@@ -71,7 +76,7 @@ def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_nig
             "OT_Pay": ot_pay,
             "Incentive_Bonus": monthly_bonus,
             "Cash_Allowances": allowances,
-            "SPF_Pension": monthly_pension,
+            "SPF_Pension": monthly_pension_employer,
             "Health_Insurance": health_cover,
             "Perks_Subsidies": perks,
             "Net_Cash_Pay": direct_cash + allowances,
@@ -87,7 +92,7 @@ if "logged_in" not in st.session_state:
 if "spf_rate" not in st.session_state:
     st.session_state.spf_rate = 0.11
 
-# Function to render employee statement
+# Function to render employee statement & Pension Analytics
 def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0, custom_bonus=None, spf_rate=0.11):
     monthly_df = generate_annual_payroll_history(emp_record, custom_ot_day, custom_ot_night, custom_bonus, spf_rate)
     
@@ -104,8 +109,8 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Annual Base Salary", f"OMR {annual_base:,.2f}")
     c2.metric("Annual Overtime Earned", f"OMR {annual_ot:,.2f}", delta=f"{monthly_df['Day_OT_Hrs'].sum() + monthly_df['Night_OT_Hrs'].sum():.0f} total hrs")
-    c3.metric("Employer SPF Pension Investment", f"OMR {annual_pension:,.2f}", delta=f"{spf_rate*100:.1f}% Statutory" if annual_pension > 0 else "Expatriate (EOSG)")
-    c4.metric("Annual Rewards Multiplier", f"{multiplier:.2f}x Base")
+    c3.metric("Annual Total Rewards Value", f"OMR {annual_total_rewards:,.2f}")
+    c4.metric("Package Multiplier", f"{multiplier:.2f}x Base")
 
     st.divider()
 
@@ -142,7 +147,64 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
 
     st.write("")
 
-    # Section 2: Visual Trends Over the 12 Months
+    # --- Section 2: OMAN SOCIAL PROTECTION FUND & PENSION ANALYTICS ---
+    st.markdown("### 🛡️ Social Protection & Retirement Pension Forecast (صندوق الحماية الاجتماعية)")
+    st.caption("Comprehensive overview of your retirement milestones, accumulated fund contributions, and estimated pension benefits under Omani Social Protection Law.")
+
+    age = int(emp_record.get("Age", 32))
+    service_years = int(emp_record.get("YearsOfService", 8))
+    retire_age = 60
+    years_to_retire = max(0, retire_age - age)
+    base_sal = float(emp_record["BaseSalary_OMR"])
+    is_omani = str(emp_record.get("Nationality", "Omani")).strip().lower() == "omani"
+
+    if is_omani:
+        # Pension Calculations
+        emp_lifetime_contrib = base_sal * 0.075 * 12 * service_years
+        company_lifetime_contrib = base_sal * spf_rate * 12 * service_years
+        total_accumulated_fund = emp_lifetime_contrib + company_lifetime_contrib
+        
+        # Projected pension at retirement age 60: 2% per year of service (capped at 80%)
+        projected_total_years = service_years + years_to_retire
+        pension_accrual_rate = min(0.80, projected_total_years * 0.02)
+        projected_monthly_pension = base_sal * pension_accrual_rate
+
+        p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+        p_col1.metric("Current Service (سنوات الخدمة)", f"{service_years} Years")
+        p_col2.metric("Years to Retirement (المتبقي للتقاعد)", f"{years_to_retire} Years", f"Target Age: {retire_age}")
+        p_col3.metric("Company Paid for You (مساهمة الشركة)", f"OMR {company_lifetime_contrib:,.2f}", f"{spf_rate*100:.1f}% Share")
+        p_col4.metric("Est. Monthly Pension (المعاش المتوقع)", f"OMR {projected_monthly_pension:,.2f}", f"{pension_accrual_rate*100:.0f}% of Base")
+
+        # Pension Breakdown Table
+        pension_table = pd.DataFrame({
+            "Retirement Parameter / مؤشر التقاعد": [
+                "Employee Current Age / العمر الحالي",
+                "Official Retirement Age / سن التقاعد القانوني",
+                "Completed Years of Service / سنوات الخدمة المنجزة",
+                "Remaining Years to Pension / السنوات المتبقية حتى التقاعد",
+                "Your Total Contributions to SPF (7.5%) / إجمالي مساهماتك المقتطعة",
+                "Company's Total Contributions to SPF (11%) / إجمالي ما دفعته الشركة لك",
+                "Total Value Accumulated in SPF / الرصيد التراكمي في صندوق الحماية",
+                "Projected Monthly Pension at Age 60 / المعاش التقاعدي الشهري التقديري"
+            ],
+            "Details & Figures / القيمة والبيان": [
+                f"{age} Years Old",
+                f"{retire_age} Years",
+                f"{service_years} Years",
+                f"{years_to_retire} Years",
+                f"OMR {emp_lifetime_contrib:,.2f}",
+                f"OMR {company_lifetime_contrib:,.2f}",
+                f"OMR {total_accumulated_fund:,.2f}",
+                f"OMR {projected_monthly_pension:,.2f} per month"
+            ]
+        })
+        st.dataframe(pension_table, use_container_width=True, hide_index=True)
+    else:
+        st.info("ℹ️ Expatriate Employee: This employee is covered under the statutory End-of-Service Gratuity (EOSG) scheme as per Oman Labour Law, rather than the National Pension Fund.")
+
+    st.write("")
+
+    # Section 3: Visual Trends & Formal Statement
     col_chart, col_summary = st.columns([1.1, 0.9])
     
     with col_chart:
@@ -152,12 +214,9 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
 
     with col_summary:
         st.markdown("#### 📜 Annual Total Rewards Summary Statement")
-        nationality_status = "Omani National (Active SPF Participant)" if annual_pension > 0 else "Expatriate Employee (Subject to Statutory End-of-Service)"
-        
         statement_text = f"""
         **Employee Name:** {emp_record['Name']} ({emp_record['EmpID']})  
         **Grade & Department:** Grade {emp_record['Grade']} | {emp_record['Department']} Department  
-        **Social Protection Status:** {nationality_status}
 
         ---
         ### 12-Month Cumulative Totals
@@ -277,7 +336,6 @@ else:
 
         df_calc = df.copy()
         
-        # Calculate totals dynamically using the active SPF rate
         def calc_emp_annual_total(r):
             base = float(r["BaseSalary_OMR"])
             is_nat = str(r.get("Nationality", "Omani")).strip().lower() == "omani"
