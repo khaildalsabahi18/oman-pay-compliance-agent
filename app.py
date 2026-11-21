@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import json
+import os
 from datetime import datetime
 
 st.set_page_config(page_title="Total Rewards & Autonomous OT Agent", layout="wide")
@@ -28,30 +30,49 @@ if "Age" not in df.columns:
 if "YearsOfService" not in df.columns:
     df["YearsOfService"] = df["Age"].apply(lambda a: max(1, a - 24))
 
-# 2. Session State Initialization for Workflows & Memory
+# ==============================================================================
+# SHARED CROSS-TAB / MULTI-DEVICE AGENT MEMORY (@st.cache_resource + JSON backup)
+# ==============================================================================
+STATE_FILE = "agent_shared_state.json"
+
+@st.cache_resource
+def get_shared_agent_store():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "hr_ot_campaigns": [],
+        "emp_ot_requests": [],
+        "approved_ot_ledger": {},
+        "agent_activity_log": [
+            "🤖 [System Boot] Autonomous Total Rewards & Overtime Agent initialized (Multi-Session Sync Active)."
+        ]
+    }
+
+shared_store = get_shared_agent_store()
+
+def save_shared_store():
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(shared_store, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def log_agent_action(message):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    shared_store["agent_activity_log"].insert(0, f"🤖 [{timestamp}] {message}")
+    save_shared_store()
+
+# 2. Local Session State Initialization (Per Browser Tab Login)
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_role = None
     st.session_state.emp_id = None
 if "spf_rate" not in st.session_state:
     st.session_state.spf_rate = 0.11
-
-# Agent Workflow States
-if "hr_ot_campaigns" not in st.session_state:
-    st.session_state.hr_ot_campaigns = []  # HR-initiated extra time offers
-if "emp_ot_requests" not in st.session_state:
-    st.session_state.emp_ot_requests = []  # Employee-initiated extra time requests
-if "approved_ot_ledger" not in st.session_state:
-    # Stores verified & approved OT hours added to December payroll: {emp_id: {"day": float, "night": float}}
-    st.session_state.approved_ot_ledger = {}
-if "agent_activity_log" not in st.session_state:
-    st.session_state.agent_activity_log = [
-        "🤖 [System Boot] Autonomous Total Rewards & Overtime Agent initialized and linked to Attendance & Payroll."
-    ]
-
-def log_agent_action(message):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    st.session_state.agent_activity_log.insert(0, f"🤖 [{timestamp}] {message}")
 
 # Helper function to generate 12-month dynamic payroll history per employee
 def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_night=0.0, custom_bonus=None, spf_rate=0.11):
@@ -69,8 +90,8 @@ def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_nig
     health_cover = float(emp_record["HealthCover_OMR"])
     perks = float(emp_record["FlightTickets_OMR"]) + float(emp_record["WellnessPerks_OMR"])
     
-    # Retrieve any autonomous agent-approved OT hours for December
-    ledger_entry = st.session_state.approved_ot_ledger.get(emp_id, {"day": 0.0, "night": 0.0})
+    # Retrieve shared agent-approved OT hours for December
+    ledger_entry = shared_store["approved_ot_ledger"].get(emp_id, {"day": 0.0, "night": 0.0})
     
     np.random.seed(int("".join([str(ord(c)) for c in emp_id])) % 100000)
     
@@ -125,7 +146,6 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
     multiplier = (annual_total_rewards / annual_base) if annual_base > 0 else 0
     base_share = (annual_base / annual_total_rewards) * 100 if annual_total_rewards > 0 else 0
 
-    # Macro Metric Cards
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Annual Base Salary", f"OMR {annual_base:,.2f}")
     c2.metric("Annual Overtime Earned", f"OMR {annual_ot:,.2f}", delta=f"{monthly_df['Day_OT_Hrs'].sum() + monthly_df['Night_OT_Hrs'].sum():.1f} total hrs")
@@ -168,7 +188,7 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
     st.write("")
 
     # Section 2: Oman Social Protection Fund & Pension Analytics
-    st.markdown("### 🛡️ Social Protection & Retirement Pension Forecast (صندوق الحماية الاجتماعية)")
+    st.markdown("### 🛡️ Social Protection & Retirement Pension Forecast")
     age = int(emp_record.get("Age", 32))
     service_years = int(emp_record.get("YearsOfService", 8))
     retire_age = 60
@@ -293,7 +313,7 @@ if not st.session_state.logged_in:
 
     st.write("")
     with st.expander("⚡ Developer / Demo Fast Bypass"):
-        st.caption("Quickly switch between HR and Employees during live demonstrations to test the two-way Extra-Time Agent:")
+        st.caption("Open HR in one browser tab and an Employee in another tab to test real-time cross-tab sync:")
         dev_col1, dev_col2, dev_col3 = st.columns(3)
         with dev_col1:
             if st.button("🚀 Quick Login as HR Specialist"):
@@ -320,6 +340,12 @@ if not st.session_state.logged_in:
 # AUTHENTICATED PORTALS
 # ==============================================================================
 else:
+    # Top Sync / Refresh Bar for Instant Multi-Tab Sync
+    sync_col1, sync_col2 = st.columns([4, 1])
+    with sync_col2:
+        if st.button("🔄 Sync Live Updates", use_container_width=True):
+            st.rerun()
+
     st.sidebar.write(f"Logged in as: **{st.session_state.user_role}**")
     if st.session_state.user_role == "Employee":
         st.sidebar.write(f"Employee ID: **{st.session_state.emp_id}**")
@@ -332,7 +358,7 @@ else:
     # Live Agent Activity Feed in Sidebar
     st.sidebar.divider()
     st.sidebar.subheader("🤖 Autonomous Agent Live Log")
-    for log_item in st.session_state.agent_activity_log[:6]:
+    for log_item in shared_store["agent_activity_log"][:6]:
         st.sidebar.caption(log_item)
 
     # ==========================================================================
@@ -341,13 +367,24 @@ else:
     if st.session_state.user_role == "Employee":
         emp_record = df[df["EmpID"].astype(str).str.upper() == st.session_state.emp_id].iloc[0]
         emp_id = str(emp_record["EmpID"]).upper()
-        emp_dept = str(emp_record["Department"])
+        emp_dept = str(emp_record["Department"]).strip()
         
         st.subheader(f"👤 Welcome, {emp_record['Name']} ({emp_id}) | {emp_dept} Department")
 
-        # --- TABBED WORKSPACE FOR EMPLOYEE ---
+        # Count unread/pending offers for notification badge
+        relevant_campaigns = [
+            c for c in shared_store["hr_ot_campaigns"]
+            if c["department"].strip().lower() == emp_dept.lower() or c["department"] == "All Departments"
+        ]
+        pending_offers = [
+            c for c in relevant_campaigns
+            if emp_id not in c["accepted_by"] and emp_id not in c["declined_by"] and (c["headcount_needed"] - len(c["accepted_by"])) > 0
+        ]
+
+        inbox_label = f"📩 Agent Extra-Time Offers ({len(pending_offers)} New)" if pending_offers else "📩 Agent Extra-Time Offers (Inbox)"
+
         tab_inbox, tab_request, tab_statement = st.tabs([
-            "📩 Agent Extra-Time Offers (Inbox)", 
+            inbox_label, 
             "🙋‍♂️ Request Extra Time (Submit to HR)", 
             "📊 My Total Rewards Statement"
         ])
@@ -355,12 +392,10 @@ else:
         # TAB 1: Respond to HR-Initiated Extra Time Campaigns
         with tab_inbox:
             st.markdown("### 📩 Incoming Extra-Time Invitations from AI Agent")
-            st.caption("When HR needs extra hours in your department, the AI Agent dispatches invitations here. Accepting automatically verifies attendance and adds pay to December.")
-            
-            relevant_campaigns = [c for c in st.session_state.hr_ot_campaigns if c["department"] == emp_dept or c["department"] == "All Departments"]
+            st.caption("When HR dispatches extra-time needs in another tab, click '🔄 Sync Live Updates' at the top right to see incoming invitations immediately.")
             
             if not relevant_campaigns:
-                st.info("📭 No active extra-time calls from HR for your department right now.")
+                st.info(f"📭 No active extra-time calls from HR for **{emp_dept}** right now.")
             else:
                 for camp in relevant_campaigns:
                     with st.container(border=True):
@@ -383,14 +418,12 @@ else:
                             else:
                                 if st.button("✅ Accept Offer", key=f"acc_{camp['id']}_{emp_id}", type="primary"):
                                     camp["accepted_by"].append(emp_id)
-                                    # Autonomous Agent Workflow Execution:
-                                    # 1. Verify Attendance -> 2. Add to Payroll Ledger -> 3. Notify HR
-                                    if emp_id not in st.session_state.approved_ot_ledger:
-                                        st.session_state.approved_ot_ledger[emp_id] = {"day": 0.0, "night": 0.0}
+                                    if emp_id not in shared_store["approved_ot_ledger"]:
+                                        shared_store["approved_ot_ledger"][emp_id] = {"day": 0.0, "night": 0.0}
                                     if "Day" in camp["ot_type"]:
-                                        st.session_state.approved_ot_ledger[emp_id]["day"] += float(camp["hours"])
+                                        shared_store["approved_ot_ledger"][emp_id]["day"] += float(camp["hours"])
                                     else:
-                                        st.session_state.approved_ot_ledger[emp_id]["night"] += float(camp["hours"])
+                                        shared_store["approved_ot_ledger"][emp_id]["night"] += float(camp["hours"])
                                     
                                     log_agent_action(f"{emp_id} accepted Campaign #{camp['id']} ({camp['hours']}h). Attendance verified, payroll & budget updated, HR notified.")
                                     st.rerun()
@@ -403,8 +436,6 @@ else:
         # TAB 2: Employee-Initiated Extra Time Request
         with tab_request:
             st.markdown("### 🙋‍♂️ Submit Extra-Time Request to HR")
-            st.caption("Need to work extra hours to complete tasks? Submit a request; once HR approves, the AI Agent verifies attendance and adds the payout to your December salary.")
-            
             with st.form("emp_ot_form"):
                 req_col1, req_col2 = st.columns(2)
                 with req_col1:
@@ -416,7 +447,7 @@ else:
                 submit_req = st.form_submit_button("📤 Send Request to AI Agent", type="primary")
                 if submit_req:
                     new_req = {
-                        "req_id": f"REQ-{len(st.session_state.emp_ot_requests) + 101}",
+                        "req_id": f"REQ-{len(shared_store['emp_ot_requests']) + 101}",
                         "emp_id": emp_id,
                         "emp_name": emp_record["Name"],
                         "department": emp_dept,
@@ -426,12 +457,12 @@ else:
                         "status": "Pending HR Review",
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
                     }
-                    st.session_state.emp_ot_requests.insert(0, new_req)
+                    shared_store["emp_ot_requests"].insert(0, new_req)
                     log_agent_action(f"New OT request {new_req['req_id']} from {emp_id} ({req_hours}h) routed to HR.")
-                    st.success("✅ Request submitted! The AI Agent has routed your request to HR for approval.")
+                    st.success("✅ Request submitted! Switch to the HR tab and click '🔄 Sync Live Updates' to approve it.")
 
             st.markdown("#### 📋 My Submitted Extra-Time Requests")
-            my_reqs = [r for r in st.session_state.emp_ot_requests if r["emp_id"] == emp_id]
+            my_reqs = [r for r in shared_store["emp_ot_requests"] if r["emp_id"] == emp_id]
             if my_reqs:
                 st.dataframe(pd.DataFrame(my_reqs), use_container_width=True, hide_index=True)
             else:
@@ -447,7 +478,6 @@ else:
     elif st.session_state.user_role == "HR":
         st.subheader("🏢 HR Compensation & Autonomous Extra-Time Command Center")
 
-        # Configurable Statutory SPF Pension Rate in Sidebar
         st.sidebar.divider()
         st.sidebar.subheader("⚙️ Oman Pension / SPF Policy")
         st.session_state.spf_rate = st.sidebar.slider(
@@ -462,7 +492,7 @@ else:
             eid = str(r["EmpID"]).upper()
             base = float(r["BaseSalary_OMR"])
             hr_rate = base / 240.0
-            ledger = st.session_state.approved_ot_ledger.get(eid, {"day": 0.0, "night": 0.0})
+            ledger = shared_store["approved_ot_ledger"].get(eid, {"day": 0.0, "night": 0.0})
             ot_cost = (ledger["day"] * hr_rate * 1.25) + (ledger["night"] * hr_rate * 1.50)
             extra_ot_costs.append(ot_cost)
         
@@ -481,7 +511,6 @@ else:
         df_calc["TotalAnnual"] = df_calc.apply(calc_emp_annual_total, axis=1)
         df_calc["TotalMonthly"] = df_calc["TotalAnnual"] / 12.0
 
-        # Macro Budget KPI Cards (Rebalances automatically)
         total_agent_ot_spend = df_calc["Agent_Approved_OT_OMR"].sum()
         h1, h2, h3, h4 = st.columns(4)
         h1.metric("Total Headcount", len(df_calc))
@@ -491,18 +520,18 @@ else:
 
         st.divider()
 
-        # --- HR TABS FOR AUTONOMOUS AGENT WORKFLOWS ---
+        pending_emp_reqs = [r for r in shared_store["emp_ot_requests"] if r["status"] == "Pending HR Review"]
+        req_tab_label = f"📥 Workflow 2: Review Employee OT Requests ({len(pending_emp_reqs)} Pending)" if pending_emp_reqs else "📥 Workflow 2: Review Employee OT Requests"
+
         hr_tab1, hr_tab2, hr_tab3 = st.tabs([
             "📢 Workflow 1: Dispatch Extra-Time Need (HR → Employees)",
-            "📥 Workflow 2: Review Employee OT Requests (Employees → HR)",
+            req_tab_label,
             "🔍 Individual Audit & Workforce Registry"
         ])
 
         # HR TAB 1: HR Initiates Extra Time Campaign
         with hr_tab1:
             st.markdown("### 📢 Dispatch Autonomous Extra-Time Call to Target Employees")
-            st.caption("Specify operational overtime demand. The AI Agent will automatically notify target employees, verify attendance upon acceptance, update December payroll, and rebalance the budget.")
-            
             with st.form("hr_dispatch_form"):
                 d_col1, d_col2, d_col3, d_col4 = st.columns(4)
                 with d_col1:
@@ -525,7 +554,7 @@ else:
                         target_emps = df[df["Department"] == target_dept]["EmpID"].astype(str).str.upper().tolist()
                     
                     new_camp = {
-                        "id": f"OT-{len(st.session_state.hr_ot_campaigns) + 501}",
+                        "id": f"OT-{len(shared_store['hr_ot_campaigns']) + 501}",
                         "title": camp_title,
                         "department": target_dept,
                         "headcount_needed": int(needed_staff),
@@ -535,15 +564,15 @@ else:
                         "accepted_by": [],
                         "declined_by": []
                     }
-                    st.session_state.hr_ot_campaigns.insert(0, new_camp)
-                    log_agent_action(f"Campaign #{new_camp['id']} launched for {target_dept}. Notified {len(target_emps)} employees ({', '.join(target_emps[:4])}...).")
-                    st.success(f"🤖 Agent Dispatched! Messages sent to **{len(target_emps)} employees** in **{target_dept}**.")
+                    shared_store["hr_ot_campaigns"].insert(0, new_camp)
+                    log_agent_action(f"Campaign #{new_camp['id']} launched for {target_dept}. Notified {len(target_emps)} employees.")
+                    st.success(f"🤖 Agent Dispatched! Messages sent to **{len(target_emps)} employees** in **{target_dept}**. Switch to the Employee tab and click '🔄 Sync Live Updates'.")
 
             st.markdown("#### 📊 Live Campaign Tracking & Responses")
-            if not st.session_state.hr_ot_campaigns:
+            if not shared_store["hr_ot_campaigns"]:
                 st.info("No extra-time campaigns dispatched yet. Create one above to see the Agent in action.")
             else:
-                for c in st.session_state.hr_ot_campaigns:
+                for c in shared_store["hr_ot_campaigns"]:
                     with st.container(border=True):
                         st.markdown(f"**Campaign #{c['id']}: {c['title']}** ({c['department']} | {c['hours']} hrs | {c['ot_type']})")
                         st.write(f"• **Progress:** {len(c['accepted_by'])} / {c['headcount_needed']} positions filled")
@@ -554,12 +583,10 @@ else:
         # HR TAB 2: Review Employee-Submitted OT Requests
         with hr_tab2:
             st.markdown("### 📥 Employee Extra-Time Requests Queue")
-            st.caption("Review requests submitted by employees. Approving triggers the AI Agent to verify attendance, credit December payroll, and rebalance the budget.")
-            
-            if not st.session_state.emp_ot_requests:
+            if not shared_store["emp_ot_requests"]:
                 st.info("📭 No employee extra-time requests in queue.")
             else:
-                for req in st.session_state.emp_ot_requests:
+                for req in shared_store["emp_ot_requests"]:
                     with st.container(border=True):
                         r_col1, r_col2 = st.columns([2.2, 1])
                         with r_col1:
@@ -571,12 +598,12 @@ else:
                                 if st.button("✅ Approve & Execute", key=f"hr_app_{req['req_id']}", type="primary"):
                                     req["status"] = "Approved & Paid"
                                     eid = req["emp_id"]
-                                    if eid not in st.session_state.approved_ot_ledger:
-                                        st.session_state.approved_ot_ledger[eid] = {"day": 0.0, "night": 0.0}
+                                    if eid not in shared_store["approved_ot_ledger"]:
+                                        shared_store["approved_ot_ledger"][eid] = {"day": 0.0, "night": 0.0}
                                     if "Day" in req["ot_type"]:
-                                        st.session_state.approved_ot_ledger[eid]["day"] += float(req["hours"])
+                                        shared_store["approved_ot_ledger"][eid]["day"] += float(req["hours"])
                                     else:
-                                        st.session_state.approved_ot_ledger[eid]["night"] += float(req["hours"])
+                                        shared_store["approved_ot_ledger"][eid]["night"] += float(req["hours"])
                                     
                                     log_agent_action(f"HR approved {req['req_id']} for {eid} ({req['hours']}h). Attendance verified, December pay & budget updated.")
                                     st.rerun()
