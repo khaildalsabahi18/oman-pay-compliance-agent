@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from datetime import datetime
 
-st.set_page_config(page_title="Total Rewards Statement Agent", layout="wide")
+st.set_page_config(page_title="Total Rewards & Autonomous OT Agent", layout="wide")
 
 # 1. Load Dataset
 @st.cache_data
@@ -21,13 +22,36 @@ if df.empty:
 # Ensure required columns exist
 if "Nationality" not in df.columns:
     df["Nationality"] = df["PensionContrib_OMR"].apply(lambda x: "Omani" if float(x) > 0 else "Expatriate")
-
 if "Age" not in df.columns:
     np.random.seed(42)
     df["Age"] = np.random.randint(26, 52, size=len(df))
-
 if "YearsOfService" not in df.columns:
     df["YearsOfService"] = df["Age"].apply(lambda a: max(1, a - 24))
+
+# 2. Session State Initialization for Workflows & Memory
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user_role = None
+    st.session_state.emp_id = None
+if "spf_rate" not in st.session_state:
+    st.session_state.spf_rate = 0.11
+
+# Agent Workflow States
+if "hr_ot_campaigns" not in st.session_state:
+    st.session_state.hr_ot_campaigns = []  # HR-initiated extra time offers
+if "emp_ot_requests" not in st.session_state:
+    st.session_state.emp_ot_requests = []  # Employee-initiated extra time requests
+if "approved_ot_ledger" not in st.session_state:
+    # Stores verified & approved OT hours added to December payroll: {emp_id: {"day": float, "night": float}}
+    st.session_state.approved_ot_ledger = {}
+if "agent_activity_log" not in st.session_state:
+    st.session_state.agent_activity_log = [
+        "🤖 [System Boot] Autonomous Total Rewards & Overtime Agent initialized and linked to Attendance & Payroll."
+    ]
+
+def log_agent_action(message):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    st.session_state.agent_activity_log.insert(0, f"🤖 [{timestamp}] {message}")
 
 # Helper function to generate 12-month dynamic payroll history per employee
 def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_night=0.0, custom_bonus=None, spf_rate=0.11):
@@ -35,6 +59,7 @@ def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_nig
         "January", "February", "March", "April", "May", "June",
         "July", "August", "September", "October", "November", "December"
     ]
+    emp_id = str(emp_record["EmpID"]).upper()
     base_sal = float(emp_record["BaseSalary_OMR"])
     allowances = float(emp_record["HousingAllow_OMR"]) + float(emp_record["TransportAllow_OMR"])
     hourly_rate = base_sal / 240.0
@@ -44,19 +69,22 @@ def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_nig
     health_cover = float(emp_record["HealthCover_OMR"])
     perks = float(emp_record["FlightTickets_OMR"]) + float(emp_record["WellnessPerks_OMR"])
     
-    np.random.seed(int("".join([str(ord(c)) for c in str(emp_record["EmpID"])])) % 100000)
+    # Retrieve any autonomous agent-approved OT hours for December
+    ledger_entry = st.session_state.approved_ot_ledger.get(emp_id, {"day": 0.0, "night": 0.0})
+    
+    np.random.seed(int("".join([str(ord(c)) for c in emp_id])) % 100000)
     
     records = []
     for idx, m in enumerate(months):
-        if idx == 11 and (custom_ot_day > 0 or custom_ot_night > 0 or custom_bonus is not None):
-            day_ot_hrs = float(custom_ot_day)
-            night_ot_hrs = float(custom_ot_night)
-            monthly_bonus = float(custom_bonus) if custom_bonus is not None else float(emp_record["Bonus_OMR"])
+        if idx == 11:  # Current Month: December
+            day_ot_hrs = float(custom_ot_day) + float(ledger_entry["day"])
+            night_ot_hrs = float(custom_ot_night) + float(ledger_entry["night"])
+            monthly_bonus = float(custom_bonus) if custom_bonus is not None else float(emp_record["Bonus_OMR"]) * 1.5
         else:
             day_ot_hrs = float(np.random.choice([0, 5, 8, 12, 16], p=[0.2, 0.3, 0.25, 0.15, 0.1]))
             night_ot_hrs = float(np.random.choice([0, 4, 8], p=[0.6, 0.3, 0.1]))
             base_bonus = float(emp_record["Bonus_OMR"])
-            if m in ["June", "December"]:
+            if m == "June":
                 monthly_bonus = base_bonus * 1.5
             elif m in ["July", "August"]:
                 monthly_bonus = base_bonus * 0.5
@@ -84,14 +112,6 @@ def generate_annual_payroll_history(emp_record, custom_ot_day=0.0, custom_ot_nig
         })
     return pd.DataFrame(records)
 
-# 2. Session State Initialization
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.user_role = None
-    st.session_state.emp_id = None
-if "spf_rate" not in st.session_state:
-    st.session_state.spf_rate = 0.11
-
 # Function to render employee statement & Pension Analytics
 def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0, custom_bonus=None, spf_rate=0.11):
     monthly_df = generate_annual_payroll_history(emp_record, custom_ot_day, custom_ot_night, custom_bonus, spf_rate)
@@ -108,7 +128,7 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
     # Macro Metric Cards
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Annual Base Salary", f"OMR {annual_base:,.2f}")
-    c2.metric("Annual Overtime Earned", f"OMR {annual_ot:,.2f}", delta=f"{monthly_df['Day_OT_Hrs'].sum() + monthly_df['Night_OT_Hrs'].sum():.0f} total hrs")
+    c2.metric("Annual Overtime Earned", f"OMR {annual_ot:,.2f}", delta=f"{monthly_df['Day_OT_Hrs'].sum() + monthly_df['Night_OT_Hrs'].sum():.1f} total hrs")
     c3.metric("Annual Total Rewards Value", f"OMR {annual_total_rewards:,.2f}")
     c4.metric("Package Multiplier", f"{multiplier:.2f}x Base")
 
@@ -116,7 +136,7 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
 
     # Section 1: Detailed 12-Month Payroll Breakdown Table
     st.markdown("### 📅 12-Month Detailed Payroll & Rewards History")
-    st.caption("📌 Note: The current month (**December**) and all its active components are highlighted in grey for immediate identification.")
+    st.caption("📌 Note: The current month (**December**) is highlighted in grey and automatically updates whenever the AI Agent verifies extra-time hours.")
 
     def highlight_current_month(row):
         if row["Month"] == "December":
@@ -147,10 +167,8 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
 
     st.write("")
 
-    # --- Section 2: OMAN SOCIAL PROTECTION FUND & PENSION ANALYTICS ---
+    # Section 2: Oman Social Protection Fund & Pension Analytics
     st.markdown("### 🛡️ Social Protection & Retirement Pension Forecast (صندوق الحماية الاجتماعية)")
-    st.caption("Comprehensive overview of your retirement milestones, accumulated fund contributions, and estimated pension benefits under Omani Social Protection Law.")
-
     age = int(emp_record.get("Age", 32))
     service_years = int(emp_record.get("YearsOfService", 8))
     retire_age = 60
@@ -159,35 +177,31 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
     is_omani = str(emp_record.get("Nationality", "Omani")).strip().lower() == "omani"
 
     if is_omani:
-        # Pension Calculations
         emp_lifetime_contrib = base_sal * 0.075 * 12 * service_years
         company_lifetime_contrib = base_sal * spf_rate * 12 * service_years
         total_accumulated_fund = emp_lifetime_contrib + company_lifetime_contrib
-        
-        # Projected pension at retirement age 60: 2% per year of service (capped at 80%)
         projected_total_years = service_years + years_to_retire
         pension_accrual_rate = min(0.80, projected_total_years * 0.02)
         projected_monthly_pension = base_sal * pension_accrual_rate
 
         p_col1, p_col2, p_col3, p_col4 = st.columns(4)
-        p_col1.metric("Current Service (سنوات الخدمة)", f"{service_years} Years")
-        p_col2.metric("Years to Retirement (المتبقي للتقاعد)", f"{years_to_retire} Years", f"Target Age: {retire_age}")
-        p_col3.metric("Company Paid for You (مساهمة الشركة)", f"OMR {company_lifetime_contrib:,.2f}", f"{spf_rate*100:.1f}% Share")
-        p_col4.metric("Est. Monthly Pension (المعاش المتوقع)", f"OMR {projected_monthly_pension:,.2f}", f"{pension_accrual_rate*100:.0f}% of Base")
+        p_col1.metric("Current Service", f"{service_years} Years")
+        p_col2.metric("Years to Retirement", f"{years_to_retire} Years", f"Target Age: {retire_age}")
+        p_col3.metric("Company Paid to SPF", f"OMR {company_lifetime_contrib:,.2f}", f"{spf_rate*100:.1f}% Share")
+        p_col4.metric("Est. Monthly Pension", f"OMR {projected_monthly_pension:,.2f}", f"{pension_accrual_rate*100:.0f}% of Base")
 
-        # Pension Breakdown Table
         pension_table = pd.DataFrame({
-            "Retirement Parameter / مؤشر التقاعد": [
-                "Employee Current Age / العمر الحالي",
-                "Official Retirement Age / سن التقاعد القانوني",
-                "Completed Years of Service / سنوات الخدمة المنجزة",
-                "Remaining Years to Pension / السنوات المتبقية حتى التقاعد",
-                "Your Total Contributions to SPF (7.5%) / إجمالي مساهماتك المقتطعة",
-                "Company's Total Contributions to SPF (11%) / إجمالي ما دفعته الشركة لك",
-                "Total Value Accumulated in SPF / الرصيد التراكمي في صندوق الحماية",
-                "Projected Monthly Pension at Age 60 / المعاش التقاعدي الشهري التقديري"
+            "Retirement Parameter": [
+                "Employee Current Age",
+                "Official Retirement Age",
+                "Completed Years of Service",
+                "Remaining Years to Pension",
+                "Employee Cumulative Contributions (7.5%)",
+                "Employer Cumulative Contributions (11%)",
+                "Total Value Accumulated in SPF",
+                "Projected Monthly Pension at Age 60"
             ],
-            "Details & Figures / القيمة والبيان": [
+            "Details & Figures": [
                 f"{age} Years Old",
                 f"{retire_age} Years",
                 f"{service_years} Years",
@@ -200,15 +214,14 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
         })
         st.dataframe(pension_table, use_container_width=True, hide_index=True)
     else:
-        st.info("ℹ️ Expatriate Employee: This employee is covered under the statutory End-of-Service Gratuity (EOSG) scheme as per Oman Labour Law, rather than the National Pension Fund.")
+        st.info("ℹ️ Expatriate Employee: Covered under statutory End-of-Service Gratuity (EOSG) as per Oman Labour Law.")
 
     st.write("")
 
     # Section 3: Visual Trends & Formal Statement
     col_chart, col_summary = st.columns([1.1, 0.9])
-    
     with col_chart:
-        st.markdown("#### 📈 Monthly Compensation Trends (Fluctuations)")
+        st.markdown("#### 📈 Monthly Compensation Trends")
         trend_chart_data = monthly_df.set_index("Month")[["Net_Cash_Pay", "Total_Rewards_Value"]]
         st.line_chart(trend_chart_data)
 
@@ -224,7 +237,7 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
         * **Total Overtime Payouts:** OMR {annual_ot:,.2f}
         * **Total Performance Bonuses:** OMR {annual_bonus:,.2f}
         * **Total Housing & Transport Allowances:** OMR {monthly_df['Cash_Allowances'].sum():,.2f}
-        * **Employer Pension Contributions (SPF):** OMR {annual_pension:,.2f} ({spf_rate*100:.1f}% Employer Share)
+        * **Employer Pension Contributions (SPF):** OMR {annual_pension:,.2f}
         * **Employer Healthcare Coverage:** OMR {monthly_df['Health_Insurance'].sum():,.2f}
         * **Total Perks & Flight Subsidies:** OMR {monthly_df['Perks_Subsidies'].sum():,.2f}
         ---
@@ -234,7 +247,6 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
         Your direct basic salary accounts for only **{base_share:.1f}%** of the total investment made by the organization throughout the entire year.
         """
         st.info(statement_text)
-
         st.download_button(
             label="📥 Download Annual Statement (.txt)",
             data=statement_text,
@@ -243,7 +255,7 @@ def render_employee_statement(emp_record, custom_ot_day=0.0, custom_ot_night=0.0
         )
 
 # Header
-st.title("💼 Total Rewards Statement Agent")
+st.title("💼 Autonomous Total Rewards & Extra-Time Agent")
 st.caption("MNGT3557 Compensation & Performance Management | Section 1 Agent (Topic 8)")
 st.divider()
 
@@ -252,21 +264,14 @@ st.divider()
 # ==============================================================================
 if not st.session_state.logged_in:
     st.subheader("🔐 Secure Portal Authentication")
-    
     col_a, col_b = st.columns([1, 1])
-    
     with col_a:
-        portal_choice = st.radio(
-            "Select Portal:",
-            ["👤 Employee Portal", "🏢 HR / Management Portal"]
-        )
-
+        portal_choice = st.radio("Select Portal:", ["👤 Employee Portal", "🏢 HR / Management Portal"])
     with col_b:
         with st.form("login_form"):
             user_id = st.text_input("Enter User ID:", placeholder="e.g., EMP201 for Employee or hr for HR")
             password = st.text_input("Enter Password:", type="password", placeholder="Default: 1234")
             submitted = st.form_submit_button("Sign In", type="primary")
-
             if submitted:
                 cleaned_id = user_id.strip()
                 if "Employee" in portal_choice:
@@ -278,7 +283,6 @@ if not st.session_state.logged_in:
                         st.rerun()
                     else:
                         st.error("❌ Invalid Employee ID or Password! (Hint: Password is 1234)")
-                
                 elif "HR" in portal_choice:
                     if cleaned_id.lower() == "hr" and password == "1234":
                         st.session_state.logged_in = True
@@ -288,42 +292,160 @@ if not st.session_state.logged_in:
                         st.error("❌ Invalid HR credentials! (Use ID: hr and Password: 1234)")
 
     st.write("")
-    with st.expander("⚡ Developer / Demo Fast Bypass (تخطي الدخول السريع للمطور)"):
-        st.caption("Use these quick bypass buttons during live presentations to skip typing credentials:")
-        dev_col1, dev_col2 = st.columns(2)
+    with st.expander("⚡ Developer / Demo Fast Bypass"):
+        st.caption("Quickly switch between HR and Employees during live demonstrations to test the two-way Extra-Time Agent:")
+        dev_col1, dev_col2, dev_col3 = st.columns(3)
         with dev_col1:
-            if st.button("🚀 Quick Login as HR Specialist (تخطي كـ HR)"):
+            if st.button("🚀 Quick Login as HR Specialist"):
                 st.session_state.logged_in = True
                 st.session_state.user_role = "HR"
                 st.rerun()
         with dev_col2:
-            first_emp_id = str(df.iloc[0]["EmpID"]).upper()
-            if st.button(f"👤 Quick Login as Employee ({first_emp_id})"):
+            emp1 = str(df.iloc[0]["EmpID"]).upper()
+            if st.button(f"👤 Quick Login as {emp1} ({df.iloc[0]['Department']})"):
                 st.session_state.logged_in = True
                 st.session_state.user_role = "Employee"
-                st.session_state.emp_id = first_emp_id
+                st.session_state.emp_id = emp1
                 st.rerun()
+        with dev_col3:
+            if len(df) > 1:
+                emp2 = str(df.iloc[1]["EmpID"]).upper()
+                if st.button(f"👤 Quick Login as {emp2} ({df.iloc[1]['Department']})"):
+                    st.session_state.logged_in = True
+                    st.session_state.user_role = "Employee"
+                    st.session_state.emp_id = emp2
+                    st.rerun()
 
 # ==============================================================================
 # AUTHENTICATED PORTALS
 # ==============================================================================
 else:
     st.sidebar.write(f"Logged in as: **{st.session_state.user_role}**")
+    if st.session_state.user_role == "Employee":
+        st.sidebar.write(f"Employee ID: **{st.session_state.emp_id}**")
     if st.sidebar.button("Sign Out"):
         st.session_state.logged_in = False
         st.session_state.user_role = None
         st.session_state.emp_id = None
         st.rerun()
 
-    # 1. Employee Authenticated View
+    # Live Agent Activity Feed in Sidebar
+    st.sidebar.divider()
+    st.sidebar.subheader("🤖 Autonomous Agent Live Log")
+    for log_item in st.session_state.agent_activity_log[:6]:
+        st.sidebar.caption(log_item)
+
+    # ==========================================================================
+    # 1. EMPLOYEE PORTAL
+    # ==========================================================================
     if st.session_state.user_role == "Employee":
         emp_record = df[df["EmpID"].astype(str).str.upper() == st.session_state.emp_id].iloc[0]
-        st.subheader(f"👤 Welcome, {emp_record['Name']} ({emp_record['EmpID']})")
-        render_employee_statement(emp_record, spf_rate=st.session_state.spf_rate)
+        emp_id = str(emp_record["EmpID"]).upper()
+        emp_dept = str(emp_record["Department"])
+        
+        st.subheader(f"👤 Welcome, {emp_record['Name']} ({emp_id}) | {emp_dept} Department")
 
-    # 2. HR Authenticated View
+        # --- TABBED WORKSPACE FOR EMPLOYEE ---
+        tab_inbox, tab_request, tab_statement = st.tabs([
+            "📩 Agent Extra-Time Offers (Inbox)", 
+            "🙋‍♂️ Request Extra Time (Submit to HR)", 
+            "📊 My Total Rewards Statement"
+        ])
+
+        # TAB 1: Respond to HR-Initiated Extra Time Campaigns
+        with tab_inbox:
+            st.markdown("### 📩 Incoming Extra-Time Invitations from AI Agent")
+            st.caption("When HR needs extra hours in your department, the AI Agent dispatches invitations here. Accepting automatically verifies attendance and adds pay to December.")
+            
+            relevant_campaigns = [c for c in st.session_state.hr_ot_campaigns if c["department"] == emp_dept or c["department"] == "All Departments"]
+            
+            if not relevant_campaigns:
+                st.info("📭 No active extra-time calls from HR for your department right now.")
+            else:
+                for camp in relevant_campaigns:
+                    with st.container(border=True):
+                        c_info, c_action = st.columns([2.2, 1])
+                        accepted_count = len(camp["accepted_by"])
+                        slots_left = camp["headcount_needed"] - accepted_count
+                        
+                        with c_info:
+                            st.markdown(f"**Campaign #{camp['id']} — {camp['title']}**")
+                            st.write(f"• **Hours Offered:** {camp['hours']} hrs ({camp['ot_type']}) | **Target Dept:** {camp['department']}")
+                            st.write(f"• **Spots Remaining:** {slots_left} of {camp['headcount_needed']} needed")
+                        
+                        with c_action:
+                            if emp_id in camp["accepted_by"]:
+                                st.success("✅ Accepted & Verified by Attendance System")
+                            elif emp_id in camp["declined_by"]:
+                                st.warning("❌ Declined")
+                            elif slots_left <= 0:
+                                st.error("🔒 Quota Filled")
+                            else:
+                                if st.button("✅ Accept Offer", key=f"acc_{camp['id']}_{emp_id}", type="primary"):
+                                    camp["accepted_by"].append(emp_id)
+                                    # Autonomous Agent Workflow Execution:
+                                    # 1. Verify Attendance -> 2. Add to Payroll Ledger -> 3. Notify HR
+                                    if emp_id not in st.session_state.approved_ot_ledger:
+                                        st.session_state.approved_ot_ledger[emp_id] = {"day": 0.0, "night": 0.0}
+                                    if "Day" in camp["ot_type"]:
+                                        st.session_state.approved_ot_ledger[emp_id]["day"] += float(camp["hours"])
+                                    else:
+                                        st.session_state.approved_ot_ledger[emp_id]["night"] += float(camp["hours"])
+                                    
+                                    log_agent_action(f"{emp_id} accepted Campaign #{camp['id']} ({camp['hours']}h). Attendance verified, payroll & budget updated, HR notified.")
+                                    st.rerun()
+                                    
+                                if st.button("❌ Decline", key=f"dec_{camp['id']}_{emp_id}"):
+                                    camp["declined_by"].append(emp_id)
+                                    log_agent_action(f"{emp_id} declined Campaign #{camp['id']}. HR notified.")
+                                    st.rerun()
+
+        # TAB 2: Employee-Initiated Extra Time Request
+        with tab_request:
+            st.markdown("### 🙋‍♂️ Submit Extra-Time Request to HR")
+            st.caption("Need to work extra hours to complete tasks? Submit a request; once HR approves, the AI Agent verifies attendance and adds the payout to your December salary.")
+            
+            with st.form("emp_ot_form"):
+                req_col1, req_col2 = st.columns(2)
+                with req_col1:
+                    req_hours = st.number_input("Requested Extra Hours:", min_value=1.0, max_value=40.0, value=4.0, step=1.0)
+                    req_type = st.selectbox("Overtime Type:", ["Day Overtime (1.25x)", "Night Overtime (1.50x)"])
+                with req_col2:
+                    req_reason = st.text_area("Justification / Task Description:", placeholder="e.g., Year-end inventory audit and urgent client reporting")
+                
+                submit_req = st.form_submit_button("📤 Send Request to AI Agent", type="primary")
+                if submit_req:
+                    new_req = {
+                        "req_id": f"REQ-{len(st.session_state.emp_ot_requests) + 101}",
+                        "emp_id": emp_id,
+                        "emp_name": emp_record["Name"],
+                        "department": emp_dept,
+                        "hours": req_hours,
+                        "ot_type": req_type,
+                        "reason": req_reason if req_reason.strip() else "Operational task completion",
+                        "status": "Pending HR Review",
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
+                    }
+                    st.session_state.emp_ot_requests.insert(0, new_req)
+                    log_agent_action(f"New OT request {new_req['req_id']} from {emp_id} ({req_hours}h) routed to HR.")
+                    st.success("✅ Request submitted! The AI Agent has routed your request to HR for approval.")
+
+            st.markdown("#### 📋 My Submitted Extra-Time Requests")
+            my_reqs = [r for r in st.session_state.emp_ot_requests if r["emp_id"] == emp_id]
+            if my_reqs:
+                st.dataframe(pd.DataFrame(my_reqs), use_container_width=True, hide_index=True)
+            else:
+                st.caption("No personal requests submitted yet.")
+
+        # TAB 3: Full Total Rewards Statement
+        with tab_statement:
+            render_employee_statement(emp_record, spf_rate=st.session_state.spf_rate)
+
+    # ==========================================================================
+    # 2. HR / MANAGEMENT PORTAL
+    # ==========================================================================
     elif st.session_state.user_role == "HR":
-        st.subheader("🏢 HR Compensation & Benefits Analytics Center")
+        st.subheader("🏢 HR Compensation & Autonomous Extra-Time Command Center")
 
         # Configurable Statutory SPF Pension Rate in Sidebar
         st.sidebar.divider()
@@ -332,10 +454,20 @@ else:
             "Employer SPF Pension Share (%)",
             min_value=5.0, max_value=20.0, value=11.0, step=0.5
         ) / 100.0
-        st.sidebar.caption("Statutory benchmark under Omani Social Protection Law is 11.0%.")
 
+        # Calculate live organization budget including Agent-Approved Extra Time
         df_calc = df.copy()
+        extra_ot_costs = []
+        for _, r in df_calc.iterrows():
+            eid = str(r["EmpID"]).upper()
+            base = float(r["BaseSalary_OMR"])
+            hr_rate = base / 240.0
+            ledger = st.session_state.approved_ot_ledger.get(eid, {"day": 0.0, "night": 0.0})
+            ot_cost = (ledger["day"] * hr_rate * 1.25) + (ledger["night"] * hr_rate * 1.50)
+            extra_ot_costs.append(ot_cost)
         
+        df_calc["Agent_Approved_OT_OMR"] = extra_ot_costs
+
         def calc_emp_annual_total(r):
             base = float(r["BaseSalary_OMR"])
             is_nat = str(r.get("Nationality", "Omani")).strip().lower() == "omani"
@@ -344,81 +476,162 @@ else:
             allow_m = float(r["HousingAllow_OMR"]) + float(r["TransportAllow_OMR"])
             prot_m = float(r["HealthCover_OMR"]) + pension_m
             perks_m = float(r["FlightTickets_OMR"]) + float(r["WellnessPerks_OMR"])
-            return (direct_m + allow_m + prot_m + perks_m) * 12.0
+            return ((direct_m + allow_m + prot_m + perks_m) * 12.0) + float(r["Agent_Approved_OT_OMR"])
 
         df_calc["TotalAnnual"] = df_calc.apply(calc_emp_annual_total, axis=1)
         df_calc["TotalMonthly"] = df_calc["TotalAnnual"] / 12.0
 
+        # Macro Budget KPI Cards (Rebalances automatically)
+        total_agent_ot_spend = df_calc["Agent_Approved_OT_OMR"].sum()
         h1, h2, h3, h4 = st.columns(4)
         h1.metric("Total Headcount", len(df_calc))
-        h2.metric("Monthly Base Payroll", f"OMR {df_calc['BaseSalary_OMR'].sum():,.2f}")
+        h2.metric("Agent-Verified OT Spend (Dec)", f"OMR {total_agent_ot_spend:,.2f}", delta="Auto-Balanced")
         h3.metric("Total Monthly Rewards", f"OMR {df_calc['TotalMonthly'].sum():,.2f}")
-        h4.metric("Annual Rewards Budget", f"OMR {df_calc['TotalAnnual'].sum():,.2f}")
+        h4.metric("Rebalanced Annual Budget", f"OMR {df_calc['TotalAnnual'].sum():,.2f}")
 
         st.divider()
 
-        # Individual Employee Audit & Variable Inputs Section
-        st.markdown("### 🔍 Individual Employee Audit & Variable Pay Adjustment")
-        st.caption("Select an employee, then adjust variable parameters (Overtime, Bonus) to simulate changes in real-time.")
-        
-        emp_options = df_calc.apply(
-            lambda r: f"{r.get('EmpID', 'N/A')} - {r.get('Name', 'Unknown')} ({r.get('Department', 'General')})", 
-            axis=1
-        ).tolist()
-        
-        selected_label = st.selectbox("Select Employee to audit & adjust:", emp_options)
-        selected_id = selected_label.split(" - ")[0]
-        selected_emp = df_calc[df_calc["EmpID"] == selected_id].iloc[0]
+        # --- HR TABS FOR AUTONOMOUS AGENT WORKFLOWS ---
+        hr_tab1, hr_tab2, hr_tab3 = st.tabs([
+            "📢 Workflow 1: Dispatch Extra-Time Need (HR → Employees)",
+            "📥 Workflow 2: Review Employee OT Requests (Employees → HR)",
+            "🔍 Individual Audit & Workforce Registry"
+        ])
 
-        with st.expander("⚙️ Adjust Variable Pay & Overtime Inputs for this Employee", expanded=True):
-            col_in1, col_in2, col_in3 = st.columns(3)
-            with col_in1:
-                hr_day_ot = st.number_input(
-                    "Day Overtime Hours (1.25x)", 
-                    min_value=0.0, max_value=80.0, value=10.0, step=1.0, 
-                    key=f"hr_day_ot_{selected_id}"
-                )
-            with col_in2:
-                hr_night_ot = st.number_input(
-                    "Night Overtime Hours (1.50x)", 
-                    min_value=0.0, max_value=80.0, value=4.0, step=1.0, 
-                    key=f"hr_night_ot_{selected_id}"
-                )
-            with col_in3:
-                hr_bonus = st.number_input(
-                    "Performance Bonus / Incentive (OMR)", 
-                    min_value=0.0, max_value=3000.0, value=float(selected_emp["Bonus_OMR"]), step=25.0, 
-                    key=f"hr_bonus_{selected_id}"
-                )
+        # HR TAB 1: HR Initiates Extra Time Campaign
+        with hr_tab1:
+            st.markdown("### 📢 Dispatch Autonomous Extra-Time Call to Target Employees")
+            st.caption("Specify operational overtime demand. The AI Agent will automatically notify target employees, verify attendance upon acceptance, update December payroll, and rebalance the budget.")
+            
+            with st.form("hr_dispatch_form"):
+                d_col1, d_col2, d_col3, d_col4 = st.columns(4)
+                with d_col1:
+                    all_depts = ["All Departments"] + sorted(df["Department"].dropna().unique().tolist())
+                    target_dept = st.selectbox("Target Department:", all_depts)
+                with d_col2:
+                    needed_staff = st.number_input("Employees Needed:", min_value=1, max_value=20, value=2, step=1)
+                with d_col3:
+                    hours_per_emp = st.number_input("Hours per Employee:", min_value=1.0, max_value=40.0, value=6.0, step=1.0)
+                with d_col4:
+                    camp_ot_type = st.selectbox("Overtime Rate:", ["Day Overtime (1.25x)", "Night Overtime (1.50x)"])
+                
+                camp_title = st.text_input("Task / Shift Description:", value="End-of-Year Operational Surge & Inventory Audit")
+                dispatch_btn = st.form_submit_button("🤖 Launch AI Agent Dispatch", type="primary")
+                
+                if dispatch_btn:
+                    if target_dept == "All Departments":
+                        target_emps = df["EmpID"].astype(str).str.upper().tolist()
+                    else:
+                        target_emps = df[df["Department"] == target_dept]["EmpID"].astype(str).str.upper().tolist()
+                    
+                    new_camp = {
+                        "id": f"OT-{len(st.session_state.hr_ot_campaigns) + 501}",
+                        "title": camp_title,
+                        "department": target_dept,
+                        "headcount_needed": int(needed_staff),
+                        "hours": float(hours_per_emp),
+                        "ot_type": camp_ot_type,
+                        "notified_emps": target_emps,
+                        "accepted_by": [],
+                        "declined_by": []
+                    }
+                    st.session_state.hr_ot_campaigns.insert(0, new_camp)
+                    log_agent_action(f"Campaign #{new_camp['id']} launched for {target_dept}. Notified {len(target_emps)} employees ({', '.join(target_emps[:4])}...).")
+                    st.success(f"🤖 Agent Dispatched! Messages sent to **{len(target_emps)} employees** in **{target_dept}**.")
 
-        # Render Statement with HR's Variable Inputs & Dynamic Pension
-        render_employee_statement(
-            selected_emp, 
-            custom_ot_day=hr_day_ot, 
-            custom_ot_night=hr_night_ot, 
-            custom_bonus=hr_bonus,
-            spf_rate=st.session_state.spf_rate
-        )
+            st.markdown("#### 📊 Live Campaign Tracking & Responses")
+            if not st.session_state.hr_ot_campaigns:
+                st.info("No extra-time campaigns dispatched yet. Create one above to see the Agent in action.")
+            else:
+                for c in st.session_state.hr_ot_campaigns:
+                    with st.container(border=True):
+                        st.markdown(f"**Campaign #{c['id']}: {c['title']}** ({c['department']} | {c['hours']} hrs | {c['ot_type']})")
+                        st.write(f"• **Progress:** {len(c['accepted_by'])} / {c['headcount_needed']} positions filled")
+                        st.write(f"• **Accepted & Verified (Payroll Updated):** {', '.join(c['accepted_by']) if c['accepted_by'] else 'Awaiting responses...'}")
+                        if c["declined_by"]:
+                            st.write(f"• **Declined:** {', '.join(c['declined_by'])}")
 
-        st.divider()
+        # HR TAB 2: Review Employee-Submitted OT Requests
+        with hr_tab2:
+            st.markdown("### 📥 Employee Extra-Time Requests Queue")
+            st.caption("Review requests submitted by employees. Approving triggers the AI Agent to verify attendance, credit December payroll, and rebalance the budget.")
+            
+            if not st.session_state.emp_ot_requests:
+                st.info("📭 No employee extra-time requests in queue.")
+            else:
+                for req in st.session_state.emp_ot_requests:
+                    with st.container(border=True):
+                        r_col1, r_col2 = st.columns([2.2, 1])
+                        with r_col1:
+                            st.markdown(f"**{req['req_id']} — {req['emp_name']} ({req['emp_id']})** | Dept: {req['department']}")
+                            st.write(f"• **Requested:** {req['hours']} hrs ({req['ot_type']}) | **Submitted:** {req['timestamp']}")
+                            st.write(f"• **Reason:** {req['reason']}")
+                        with r_col2:
+                            if req["status"] == "Pending HR Review":
+                                if st.button("✅ Approve & Execute", key=f"hr_app_{req['req_id']}", type="primary"):
+                                    req["status"] = "Approved & Paid"
+                                    eid = req["emp_id"]
+                                    if eid not in st.session_state.approved_ot_ledger:
+                                        st.session_state.approved_ot_ledger[eid] = {"day": 0.0, "night": 0.0}
+                                    if "Day" in req["ot_type"]:
+                                        st.session_state.approved_ot_ledger[eid]["day"] += float(req["hours"])
+                                    else:
+                                        st.session_state.approved_ot_ledger[eid]["night"] += float(req["hours"])
+                                    
+                                    log_agent_action(f"HR approved {req['req_id']} for {eid} ({req['hours']}h). Attendance verified, December pay & budget updated.")
+                                    st.rerun()
+                                if st.button("❌ Reject", key=f"hr_rej_{req['req_id']}"):
+                                    req["status"] = "Rejected by HR"
+                                    log_agent_action(f"HR rejected {req['req_id']} for {req['emp_id']}.")
+                                    st.rerun()
+                            elif req["status"] == "Approved & Paid":
+                                st.success("✅ Approved & Credited to Payroll")
+                            else:
+                                st.error("❌ Rejected")
 
-        # Organization Workforce Table
-        st.markdown("### 📋 Baseline Workforce Summary Registry")
-        display_cols = ["EmpID", "Name", "Department", "Grade", "BaseSalary_OMR", "TotalMonthly", "TotalAnnual"]
-        st.dataframe(
-            df_calc[display_cols], 
-            use_container_width=True,
-            column_config={
-                "EmpID": st.column_config.TextColumn("ID", width="small"),
-                "Name": st.column_config.TextColumn("Full Name", width="medium"),
-                "Department": st.column_config.TextColumn("Department", width="medium"),
-                "Grade": st.column_config.TextColumn("Grade", width="small"),
-                "BaseSalary_OMR": st.column_config.NumberColumn("Base Salary", format="OMR %.3f"),
-                "TotalMonthly": st.column_config.NumberColumn("Total Monthly", format="OMR %.3f"),
-                "TotalAnnual": st.column_config.NumberColumn("Total Annual", format="OMR %.3f"),
-            }
-        )
+        # HR TAB 3: Individual Audit & Workforce Registry
+        with hr_tab3:
+            st.markdown("### 🔍 Individual Employee Audit & Manual Override")
+            emp_options = df_calc.apply(
+                lambda r: f"{r.get('EmpID', 'N/A')} - {r.get('Name', 'Unknown')} ({r.get('Department', 'General')})", 
+                axis=1
+            ).tolist()
+            
+            selected_label = st.selectbox("Select Employee to audit:", emp_options)
+            selected_id = selected_label.split(" - ")[0]
+            selected_emp = df_calc[df_calc["EmpID"] == selected_id].iloc[0]
 
-        st.markdown("### 🏢 Baseline Monthly Expenditure by Department")
-        dept_costs = df_calc.groupby("Department")["TotalMonthly"].sum().reset_index()
-        st.bar_chart(dept_costs.set_index("Department"))
+            with st.expander("⚙️ Manual Variable Adjustment (Optional Override)", expanded=False):
+                col_in1, col_in2, col_in3 = st.columns(3)
+                with col_in1:
+                    hr_day_ot = st.number_input("Extra Day OT Hours", min_value=0.0, max_value=80.0, value=0.0, step=1.0, key=f"hr_day_ot_{selected_id}")
+                with col_in2:
+                    hr_night_ot = st.number_input("Extra Night OT Hours", min_value=0.0, max_value=80.0, value=0.0, step=1.0, key=f"hr_night_ot_{selected_id}")
+                with col_in3:
+                    hr_bonus = st.number_input("December Bonus (OMR)", min_value=0.0, max_value=3000.0, value=float(selected_emp["Bonus_OMR"]) * 1.5, step=25.0, key=f"hr_bonus_{selected_id}")
+
+            render_employee_statement(
+                selected_emp, 
+                custom_ot_day=hr_day_ot, 
+                custom_ot_night=hr_night_ot, 
+                custom_bonus=hr_bonus,
+                spf_rate=st.session_state.spf_rate
+            )
+
+            st.divider()
+            st.markdown("### 📋 Workforce Budget & Registry")
+            display_cols = ["EmpID", "Name", "Department", "Grade", "BaseSalary_OMR", "Agent_Approved_OT_OMR", "TotalMonthly", "TotalAnnual"]
+            st.dataframe(
+                df_calc[display_cols], 
+                use_container_width=True,
+                column_config={
+                    "EmpID": st.column_config.TextColumn("ID", width="small"),
+                    "Name": st.column_config.TextColumn("Full Name", width="medium"),
+                    "Department": st.column_config.TextColumn("Department", width="medium"),
+                    "Grade": st.column_config.TextColumn("Grade", width="small"),
+                    "BaseSalary_OMR": st.column_config.NumberColumn("Base Salary", format="OMR %.3f"),
+                    "Agent_Approved_OT_OMR": st.column_config.NumberColumn("Agent OT (Dec)", format="OMR %.3f"),
+                    "TotalMonthly": st.column_config.NumberColumn("Total Monthly", format="OMR %.3f"),
+                    "TotalAnnual": st.column_config.NumberColumn("Total Annual", format="OMR %.3f"),
+                }
+            )
