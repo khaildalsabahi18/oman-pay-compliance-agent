@@ -9,29 +9,94 @@ from datetime import datetime
 st.set_page_config(page_title="Autonomous HR Rewards & Extra-Time Agent", page_icon="🤖", layout="wide")
 
 # ==============================================================================
-# 1. LOAD DATASET
+# 1. LOAD & AUTO-NORMALIZE DATASET
 # ==============================================================================
 @st.cache_data
 def load_data():
     try:
-        return pd.read_csv("dataset.csv")
+        raw_df = pd.read_csv("dataset.csv")
     except Exception:
         return pd.DataFrame()
+
+    if raw_df.empty:
+        return raw_df
+
+    # Auto-map flexible column names so any CSV schema works without crashing
+    col_map = {}
+    for c in raw_df.columns:
+        cl = c.strip().lower().replace("_", "").replace(" ", "")
+        if cl in ["empid", "employeeid", "id"]:
+            col_map[c] = "EmpID"
+        elif cl in ["name", "fullname", "employeename"]:
+            col_map[c] = "Name"
+        elif cl in ["department", "dept"]:
+            col_map[c] = "Department"
+        elif cl in ["grade", "jobgrade"]:
+            col_map[c] = "Grade"
+        elif "basesalary" in cl or cl == "salary":
+            col_map[c] = "BaseSalary_OMR"
+        elif "bonus" in cl:
+            col_map[c] = "Bonus_OMR"
+        elif "housing" in cl:
+            col_map[c] = "HousingAllow_OMR"
+        elif "transport" in cl:
+            col_map[c] = "TransportAllow_OMR"
+        elif "health" in cl:
+            col_map[c] = "HealthCover_OMR"
+        elif "pension" in cl or "spf" in cl:
+            col_map[c] = "PensionContrib_OMR"
+        elif "flight" in cl or "ticket" in cl:
+            col_map[c] = "FlightTickets_OMR"
+        elif "wellness" in cl or "perk" in cl:
+            col_map[c] = "WellnessPerks_OMR"
+        elif "national" in cl:
+            col_map[c] = "Nationality"
+        elif cl == "age":
+            col_map[c] = "Age"
+        elif "service" in cl or "tenure" in cl:
+            col_map[c] = "YearsOfService"
+
+    df_clean = raw_df.rename(columns=col_map).copy()
+
+    # Fill defaults for any missing columns
+    if "EmpID" not in df_clean.columns:
+        df_clean["EmpID"] = [f"EMP{201 + i}" for i in range(len(df_clean))]
+    if "Name" not in df_clean.columns:
+        df_clean["Name"] = [f"Employee {i + 1}" for i in range(len(df_clean))]
+    if "Department" not in df_clean.columns:
+        df_clean["Department"] = "Operations"
+    if "Grade" not in df_clean.columns:
+        df_clean["Grade"] = "G2"
+    for num_col, default_val in [
+        ("BaseSalary_OMR", 800.0),
+        ("Bonus_OMR", 50.0),
+        ("HousingAllow_OMR", 150.0),
+        ("TransportAllow_OMR", 60.0),
+        ("HealthCover_OMR", 35.0),
+        ("PensionContrib_OMR", 88.0),
+        ("FlightTickets_OMR", 25.0),
+        ("WellnessPerks_OMR", 15.0),
+    ]:
+        if num_col not in df_clean.columns:
+            df_clean[num_col] = default_val
+        else:
+            df_clean[num_col] = pd.to_numeric(df_clean[num_col], errors="coerce").fillna(default_val)
+
+    if "Nationality" not in df_clean.columns:
+        df_clean["Nationality"] = df_clean["PensionContrib_OMR"].apply(lambda x: "Omani" if float(x) > 0 else "Expatriate")
+    if "Age" not in df_clean.columns:
+        np.random.seed(42)
+        df_clean["Age"] = np.random.randint(26, 52, size=len(df_clean))
+    if "YearsOfService" not in df_clean.columns:
+        df_clean["YearsOfService"] = df_clean["Age"].apply(lambda a: max(1, int(a) - 24))
+
+    return df_clean
 
 df = load_data()
 
 if df.empty:
-    st.error("⚠️ 'dataset.csv' was not found in the repository. Please upload 'dataset.csv'.")
+    st.error("⚠️ 'dataset.csv' was not found or is empty. Please ensure 'dataset.csv' is in your GitHub repository.")
     st.stop()
-
-# Ensure required columns exist
-if "Nationality" not in df.columns:
-    df["Nationality"] = df["PensionContrib_OMR"].apply(lambda x: "Omani" if float(x) > 0 else "Expatriate")
-if "Age" not in df.columns:
-    np.random.seed(42)
-    df["Age"] = np.random.randint(26, 52, size=len(df))
-if "YearsOfService" not in df.columns:
-    df["YearsOfService"] = df["Age"].apply(lambda a: max(1, a - 24))
 
 # ==============================================================================
 # 2. SHARED CROSS-SESSION AGENT MEMORY
@@ -88,7 +153,8 @@ def generate_annual_payroll_history(emp_record, spf_rate=0.11):
     perks = float(emp_record["FlightTickets_OMR"]) + float(emp_record["WellnessPerks_OMR"])
 
     ledger_entry = shared_store["approved_ot_ledger"].get(emp_id, {"day": 0.0, "night": 0.0})
-    np.random.seed(int("".join([str(ord(c)) for c in emp_id])) % 100000)
+    seed_val = sum(ord(c) for c in emp_id) % 100000
+    np.random.seed(seed_val)
 
     records = []
     for idx, m in enumerate(months):
@@ -154,7 +220,6 @@ def render_employee_statement_card(emp_id, spf_rate=0.11, unique_key="0"):
     c3.metric("Total Rewards Value", f"OMR {annual_total_rewards:,.2f}")
     c4.metric("Package Multiplier", f"{multiplier:.2f}x Base")
 
-    # 12-Month Table with Grey December
     def highlight_december(row):
         if row["Month"] == "December":
             return ["background-color: #6c757d; color: #ffffff; font-weight: bold;"] * len(row)
@@ -179,7 +244,6 @@ def render_employee_statement_card(emp_id, spf_rate=0.11, unique_key="0"):
         }
     )
 
-    # Pension Forecast Section
     st.markdown("##### 🛡️ Oman Social Protection Fund (SPF) & Retirement Forecast")
     age = int(emp_record.get("Age", 32))
     service_years = int(emp_record.get("YearsOfService", 8))
@@ -275,40 +339,18 @@ def render_workforce_audit_card(spf_rate=0.11):
     st.bar_chart(df_calc.groupby("Department")["TotalMonthly_OMR"].sum())
 
 # ==============================================================================
-# 4. FLEXIBLE HYBRID INTENT & ENTITY PARSER (NO RIGID LIMITS)
+# 4. FLEXIBLE HYBRID INTENT & ENTITY PARSER (HANDLES TYPOS, ARABIC & ENGLISH)
 # ==============================================================================
-def parse_agent_command(prompt_text, active_role, active_emp_id, api_key=""):
+def parse_agent_command(prompt_text, active_role, active_emp_id):
     text = prompt_text.strip()
     low = text.lower()
 
-    # Optional Mode A: Real Gemini LLM Reasoning if API Key provided
-    if api_key.strip():
-        try:
-            from google import genai
-            client = genai.Client(api_key=api_key.strip())
-            sys_prompt = (
-                f"You are an autonomous HR Total Rewards & Extra-Time AI Agent. Active user role: {active_role} (ID: {active_emp_id}). "
-                f"Dataset has employees EMP201..EMP220 across Operations, IT, Finance, HR, Logistics. "
-                f"Extract JSON with keys: intent (one of: 'dispatch_ot', 'request_ot', 'employee_statement', 'workforce_audit', 'general_qa'), "
-                f"emp_id (e.g. 'EMP201' or ''), department (e.g. 'Operations' or 'All Departments'), headcount (int, default 2), "
-                f"hours (float, default 4.0), ot_type ('Day Overtime (1.25x)' or 'Night Overtime (1.50x)'), reply (helpful short response)."
-            )
-            resp = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=f"{sys_prompt}\nUser message: {text}",
-                config={"response_mime_type": "application/json"}
-            )
-            parsed = json.loads(resp.text)
-            return parsed
-        except Exception:
-            pass  # Gracefully fall back to ultra-flexible local fuzzy parser
-
-    # Mode B: Ultra-Flexible Fuzzy & Regex Parser (Handles typos, abbreviations, Arabic & English)
-    # 1. Extract Employee ID if mentioned (e.g., EMP201, emp 205, 201)
+    # 1. Extract Employee ID if mentioned
     emp_match = re.search(r'\b(?:emp\s*)?(20\d|21\d|220)\b', low)
-    extracted_emp = f"EMP{emp_match.group(1)}" if emp_match else (active_emp_id if active_role == "Employee" else "EMP201")
+    default_emp = str(df.iloc[0]["EmpID"]).upper()
+    extracted_emp = f"EMP{emp_match.group(1)}" if emp_match else (active_emp_id if active_role == "Employee" else default_emp)
 
-    # 2. Extract Department (with fuzzy matching)
+    # 2. Extract Department
     dept = "All Departments"
     if any(k in low for k in ["operat", "ops", "عمليات", "التشغيل"]):
         dept = "Operations"
@@ -384,10 +426,10 @@ def parse_agent_command(prompt_text, active_role, active_emp_id, api_key=""):
             "reply": "Here is the live organization-wide compensation budget and workforce compliance audit:"
         }
 
-    # Dynamic Data Q&A Fallback (Never gives a dead-end "I don't understand" error)
+    # Dynamic Data Q&A Fallback
     top_emp = df.loc[df["BaseSalary_OMR"].idxmax()]
     avg_sal = df["BaseSalary_OMR"].mean()
-    omani_cnt = (df["Nationality"].str.lower() == "omani").sum()
+    omani_cnt = (df["Nationality"].astype(str).str.lower() == "omani").sum()
     return {
         "intent": "general_qa",
         "reply": (
@@ -413,11 +455,187 @@ with st.sidebar:
     )
     role_key = "HR" if "HR" in active_role else "Employee"
 
-    active_emp_id = "EMP201"
-    if role_key == "Employee":
-        emp_list = df.apply(lambda r: f"{r['EmpID']} - {r['Name']} ({r['Department']})", axis=1).tolist()
-        chosen = st.selectbox("Select Employee Context:", emp_list)
+    emp_options = [f"{r['EmpID']} - {r['Name']} ({r['Department']})" for _, r in df.iterrows()]
+    active_emp_id = str(df.iloc[0]["EmpID"]).strip().upper()
+    if role_key == "Employee" and emp_options:
+        chosen = st.selectbox("Select Employee Context:", emp_options)
         active_emp_id = chosen.split(" - ")[0].strip().upper()
 
     if st.button("🔄 Sync Live Agent Memory", use_container_width=True):
         st.rerun()
+
+    st.divider()
+    st.subheader("⚖️ Omani Labour & SPF Rules")
+    spf_rate = st.slider("Employer SPF Pension Share (%)", 5.0, 20.0, 11.0, 0.5) / 100.0
+    st.caption("• Day Overtime: **1.25x** | Night OT: **1.50x**\n• Monthly Divisor: **240 hrs** | Retirement: **Age 60**")
+
+    st.divider()
+    st.subheader("📜 Live Agent Reasoning Log")
+    for item in shared_store["agent_reasoning_log"][:5]:
+        st.caption(item)
+
+# ==============================================================================
+# 6. MAIN AGENT WORKSPACE (PROACTIVE ALERTS + CONVERSATIONAL AGENT)
+# ==============================================================================
+st.title("🤖 Autonomous Total Rewards & Extra-Time AI Agent")
+st.caption(f"Active Session Context: **{active_role}** {f'({active_emp_id})' if role_key == 'Employee' else '(Organization Command Mode)'}")
+
+# Proactive Agent Notifications (Human-in-the-Loop Action Cards)
+if role_key == "Employee":
+    emp_matches = df[df["EmpID"].astype(str).str.upper() == active_emp_id]
+    if not emp_matches.empty:
+        emp_row = emp_matches.iloc[0]
+        emp_dept = str(emp_row["Department"]).strip()
+        offers = [
+            c for c in shared_store["hr_ot_campaigns"]
+            if (c["department"].lower() == emp_dept.lower() or c["department"] == "All Departments")
+            and active_emp_id not in c["accepted_by"]
+            and active_emp_id not in c["declined_by"]
+            and (c["headcount_needed"] - len(c["accepted_by"])) > 0
+        ]
+        if offers:
+            st.warning(f"🔔 **Proactive Agent Alert:** You have **{len(offers)}** extra-time shift invitation(s) from HR!")
+            for camp in offers:
+                with st.container(border=True):
+                    c1, c2 = st.columns([2.5, 1])
+                    c1.markdown(f"**Campaign #{camp['id']}** — **{camp['hours']} hrs** ({camp['ot_type']}) | Dept: **{camp['department']}** | Spots left: **{camp['headcount_needed'] - len(camp['accepted_by'])}**")
+                    with c2:
+                        b1, b2 = st.columns(2)
+                        if b1.button("✅ Accept", key=f"acc_{camp['id']}_{active_emp_id}", type="primary"):
+                            camp["accepted_by"].append(active_emp_id)
+                            shared_store["approved_ot_ledger"].setdefault(active_emp_id, {"day": 0.0, "night": 0.0})
+                            if "Day" in camp["ot_type"]:
+                                shared_store["approved_ot_ledger"][active_emp_id]["day"] += float(camp["hours"])
+                            else:
+                                shared_store["approved_ot_ledger"][active_emp_id]["night"] += float(camp["hours"])
+                            log_agent_action(f"{active_emp_id} accepted Campaign #{camp['id']} ({camp['hours']}h). Attendance verified & December payroll updated.")
+                            st.rerun()
+                        if b2.button("❌ Decline", key=f"dec_{camp['id']}_{active_emp_id}"):
+                            camp["declined_by"].append(active_emp_id)
+                            log_agent_action(f"{active_emp_id} declined Campaign #{camp['id']}.")
+                            st.rerun()
+
+elif role_key == "HR":
+    pending_reqs = [r for r in shared_store["emp_ot_requests"] if r["status"] == "Pending HR Review"]
+    if pending_reqs:
+        st.info(f"🔔 **Human-in-the-Loop Queue:** **{len(pending_reqs)}** employee extra-time request(s) awaiting your approval.")
+        for req in pending_reqs:
+            with st.container(border=True):
+                c1, c2 = st.columns([2.5, 1])
+                c1.markdown(f"**{req['req_id']}** — **{req['emp_name']} ({req['emp_id']})** requested **{req['hours']} hrs** ({req['ot_type']}) | Reason: *{req['reason']}*")
+                with c2:
+                    b1, b2 = st.columns(2)
+                    if b1.button("✅ Approve", key=f"app_{req['req_id']}", type="primary"):
+                        req["status"] = "Approved & Paid"
+                        eid = req["emp_id"]
+                        shared_store["approved_ot_ledger"].setdefault(eid, {"day": 0.0, "night": 0.0})
+                        if "Day" in req["ot_type"]:
+                            shared_store["approved_ot_ledger"][eid]["day"] += float(req["hours"])
+                        else:
+                            shared_store["approved_ot_ledger"][eid]["night"] += float(req["hours"])
+                        log_agent_action(f"HR approved {req['req_id']} for {eid} ({req['hours']}h). December payroll & budget updated.")
+                        st.rerun()
+                    if b2.button("❌ Reject", key=f"rej_{req['req_id']}"):
+                        req["status"] = "Rejected"
+                        log_agent_action(f"HR rejected {req['req_id']} for {req['emp_id']}.")
+                        st.rerun()
+
+# Initialize Chat History
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = [
+        {
+            "role": "assistant",
+            "content": "Hello! I am your **Autonomous Total Rewards & Extra-Time AI Agent**. Tell me what you need in natural language (English or Arabic)—for example:\n- *\"I need 4 workers for 3 hours overtime in Operations\"*\n- *\"Show total rewards and SPF pension forecast for EMP201\"*\n- *\"Audit full company compensation budget\"*",
+            "action": None
+        }
+    ]
+
+# Quick One-Click Prompts for Live Demonstration
+st.markdown("###### ⚡ Quick Agent Commands:")
+q1, q2, q3, q4 = st.columns(4)
+quick_prompt = None
+if q1.button("📄 EMP201 Rewards & Pension", use_container_width=True):
+    quick_prompt = "Generate total rewards and SPF pension statement for EMP201"
+if q2.button("📢 Dispatch 4 Workers (3h OT)", use_container_width=True):
+    quick_prompt = "I want 4 workers for 3 hours overtime"
+if q3.button("🙋‍♂️ Request 4h Night OT", use_container_width=True):
+    quick_prompt = "I want to request 4 hours night overtime for urgent month-end closing"
+if q4.button("📊 Audit Company Budget", use_container_width=True):
+    quick_prompt = "Audit full workforce compensation budget and compliance"
+
+# Render Chat History
+for idx, msg in enumerate(st.session_state.chat_history):
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        act = msg.get("action")
+        if act:
+            if act["intent"] == "employee_statement":
+                render_employee_statement_card(act["emp_id"], spf_rate=spf_rate, unique_key=str(idx))
+            elif act["intent"] == "workforce_audit":
+                render_workforce_audit_card(spf_rate=spf_rate)
+            elif act["intent"] == "dispatch_ot":
+                if shared_store["hr_ot_campaigns"]:
+                    latest = shared_store["hr_ot_campaigns"][0]
+                    st.success(f"📡 **Active Campaign #{latest['id']}** | Target: **{latest['department']}** | Needed: **{latest['headcount_needed']} staff** | Hours: **{latest['hours']}h ({latest['ot_type']})** | Accepted: **{len(latest['accepted_by'])}/{latest['headcount_needed']}**")
+
+# Chat Input
+user_input = st.chat_input("Ask the AI Agent anything (e.g., 'I want 4 workers for 3 hours ov', 'EMP205 statement', 'كم راتب EMP201')...")
+final_prompt = quick_prompt or user_input
+
+if final_prompt:
+    st.session_state.chat_history.append({"role": "user", "content": final_prompt, "action": None})
+    with st.chat_message("user"):
+        st.markdown(final_prompt)
+
+    with st.chat_message("assistant"):
+        with st.status("🧠 Agent Reasoning & Executing Workflow...", expanded=False) as status:
+            st.write("1. Parsing natural language intent & extracting parameters...")
+            result = parse_agent_command(final_prompt, role_key, active_emp_id)
+            st.write(f"2. Intent identified: `{result['intent']}` — Applying Omani Labour & SPF rules...")
+
+            if result["intent"] == "dispatch_ot":
+                new_camp = {
+                    "id": f"OT-{len(shared_store['hr_ot_campaigns']) + 501}",
+                    "department": result.get("department", "All Departments"),
+                    "headcount_needed": int(result.get("headcount", 2)),
+                    "hours": float(result.get("hours", 4.0)),
+                    "ot_type": result.get("ot_type", "Day Overtime (1.25x)"),
+                    "accepted_by": [],
+                    "declined_by": []
+                }
+                shared_store["hr_ot_campaigns"].insert(0, new_camp)
+                log_agent_action(f"Dispatched Campaign #{new_camp['id']} ({new_camp['headcount_needed']} staff, {new_camp['hours']}h) to {new_camp['department']}.")
+                st.write(f"3. Campaign #{new_camp['id']} dispatched to target employee inboxes.")
+
+            elif result["intent"] == "request_ot":
+                emp_row = df[df["EmpID"].astype(str).str.upper() == active_emp_id].iloc[0]
+                new_req = {
+                    "req_id": f"REQ-{len(shared_store['emp_ot_requests']) + 101}",
+                    "emp_id": active_emp_id,
+                    "emp_name": emp_row["Name"],
+                    "department": emp_row["Department"],
+                    "hours": float(result.get("hours", 4.0)),
+                    "ot_type": result.get("ot_type", "Day Overtime (1.25x)"),
+                    "reason": result.get("reason", final_prompt),
+                    "status": "Pending HR Review"
+                }
+                shared_store["emp_ot_requests"].insert(0, new_req)
+                log_agent_action(f"Employee {active_emp_id} submitted {new_req['req_id']} ({new_req['hours']}h) to HR queue.")
+                st.write(f"3. Request {new_req['req_id']} queued for HR approval.")
+
+            status.update(label="✅ Agent Execution Complete", state="complete", expanded=False)
+
+        st.markdown(result["reply"])
+        if result["intent"] == "employee_statement":
+            render_employee_statement_card(result["emp_id"], spf_rate=spf_rate, unique_key=str(len(st.session_state.chat_history)))
+        elif result["intent"] == "workforce_audit":
+            render_workforce_audit_card(spf_rate=spf_rate)
+        elif result["intent"] == "dispatch_ot" and shared_store["hr_ot_campaigns"]:
+            latest = shared_store["hr_ot_campaigns"][0]
+            st.success(f"📡 **Active Campaign #{latest['id']}** | Target: **{latest['department']}** | Needed: **{latest['headcount_needed']} staff** | Hours: **{latest['hours']}h ({latest['ot_type']})** | Accepted: **{len(latest['accepted_by'])}/{latest['headcount_needed']}**")
+
+    st.session_state.chat_history.append({
+        "role": "assistant",
+        "content": result["reply"],
+        "action": result
+    })
